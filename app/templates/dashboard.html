@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - PPIA{% endblock %}
+
+{% block content %}
+<h1 class="h3">Dashboard</h1>
+<p>Only logged-in users can see this page, {{ current_user.username }}.</p>
+{% endblock %}

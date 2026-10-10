@@ -10,10 +10,12 @@
 <body>
     <nav class="navbar navbar-dark bg-dark">
         <div class="container">
-            <a class="navbar-brand" href="{{ url_for('main.index') }}">PPIA</a>
+            <a class="navbar-brand" href="{{ url_for('main.index') }}">Hibi</a>
             <div class="d-flex align-items-center gap-2">
                 {% if current_user.is_authenticated %}
-                    <span class="text-light me-2">{{ current_user.username }}</span>
+                    <a class="btn btn-success btn-sm" href="{{ url_for('main.log_day') }}">Log today</a>
+                    <a class="btn btn-primary btn-sm" href="{{ url_for('main.dashboard') }}">Dashboard</a>
+                    <span class="text-light mx-2">{{ current_user.username }}</span>
                     <form method="post" action="{{ url_for('auth.logout') }}" class="m-0">
                         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                         <button class="btn btn-outline-light btn-sm" type="submit">Log out</button>

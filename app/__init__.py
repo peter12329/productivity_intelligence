@@ -1,4 +1,5 @@
 from flask import Flask
+from flask_wtf import CSRFProtect
 
 from config import Config
 from app.extensions import db, login_manager
@@ -10,6 +11,7 @@ def create_app(config_class=Config):
 
     db.init_app(app)
     login_manager.init_app(app)
+    CSRFProtect(app)
 
     from app import models  # noqa: F401
 

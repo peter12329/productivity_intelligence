@@ -1,1 +1,89 @@
-<h1>PPIA works</h1>
+{% extends "base.html" %}
+
+{% block content %}
+{% if data %}
+<div class="row g-4">
+  <div class="col-lg-8">
+    <h1 class="display-6 fw-semibold">{{ data.greeting }}, {{ current_user.username }}</h1>
+    <p class="text-muted">Sample data shown until you start logging days.</p>
+
+    <div class="d-flex justify-content-between small text-muted mb-1">
+      <span>This week</span><span>{{ data.percent }}% achieved</span>
+    </div>
+    <div class="progress mb-4" style="height: 8px;">
+      <div class="progress-bar" style="width: {{ data.percent }}%"></div>
+    </div>
+
+    <table class="habit-grid mb-5">
+      <thead>
+        <tr>
+          <th></th>
+          {% for day in ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"] %}<th>{{ day }}</th>{% endfor %}
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for h in data.habits %}
+        <tr>
+          <td class="habit-name"><span class="dot" style="background: {{ h.color }}"></span>{{ h.name }}</td>
+          {% for done in h.days %}
+            <td><div class="habit-cell" {% if done %}style="background: {{ h.color }}"{% endif %}></div></td>
+          {% endfor %}
+          <td class="text-muted small">{{ h.done }} / 7</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <h2 class="h6">Productivity over the last year</h2>
+    <div class="heatmap">
+      {% for week in data.weeks %}
+        <div class="heatmap-col">
+          <div class="month-label">{{ data.month_labels[loop.index0] }}</div>
+          <div class="heatmap-week">
+            {% for c in week %}
+              {% if c %}
+                <div class="cell l{{ c.level }}" title="{{ c.date }}: score {{ c.score }}"></div>
+              {% else %}
+                <div class="cell empty"></div>
+              {% endif %}
+            {% endfor %}
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+    <div class="legend small text-muted mt-2">
+      Less
+      <span class="cell l0"></span><span class="cell l1"></span><span class="cell l2"></span><span class="cell l3"></span><span class="cell l4"></span>
+      More
+    </div>
+  </div>
+
+  <div class="col-lg-4">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <h2 class="h5 m-0">{{ data.today_label }}</h2>
+      <a class="btn btn-primary btn-sm" href="{{ url_for('main.dashboard') }}">Dashboard</a>
+    </div>
+    <div class="today-panel">
+      {% for h in data.habits %}
+        {% set done = h.days[data.today_index] %}
+        <div class="today-item" style="border-left-color: {{ h.color }}">
+          <div class="d-flex justify-content-between">
+            <strong>{{ h.name }}</strong>
+            {% if done %}<span class="badge" style="background: {{ h.color }}">Done</span>{% endif %}
+          </div>
+          {% if not done %}
+            <button type="button" class="btn btn-outline-primary btn-sm w-100 mt-2" disabled>Mark complete</button>
+          {% endif %}
+        </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+
+{% else %}
+<h1>PPIA</h1>
+<p>Personal Productivity Intelligence App</p>
+<a class="btn btn-primary btn-lg" href="{{ url_for('auth.login') }}">Log in to get started</a>
+{% endif %}
+{% endblock %}

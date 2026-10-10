@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Log a day{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-8 col-lg-6">
+    <h1 class="h3 mb-3">Log a day</h1>
+    <form method="post" novalidate>
+      {{ form.hidden_tag() }}
+      <div class="row">
+        {% for field in [form.log_date, form.study_hours, form.sleep_hours, form.screen_time,
+                         form.exercise_minutes, form.caffeine_mg, form.stress_level,
+                         form.break_count, form.study_sessions, form.self_rating] %}
+          <div class="col-sm-6 mb-3">
+            {{ field.label(class="form-label") }}
+            {{ field(class="form-control" ~ (" is-invalid" if field.errors else "")) }}
+            {% for error in field.errors %}<div class="invalid-feedback">{{ error }}</div>{% endfor %}
+          </div>
+        {% endfor %}
+      </div>
+      <div class="mb-3">
+        {{ form.notes.label(class="form-label") }}
+        {{ form.notes(class="form-control", rows=2) }}
+      </div>
+      {{ form.submit(class="btn btn-primary") }}
+    </form>
+  </div>
+</div>
+{% endblock %}
