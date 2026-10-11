@@ -80,7 +80,14 @@
             {% elif state %}<span class="badge" style="background: {{ h.color }}">Done</span>
             {% else %}<span class="badge bg-secondary">Not met</span>{% endif %}
           </div>
+          {% if h.type == "check" %}
+          <form method="post" action="{{ url_for('main.toggle_habit', key=h.key) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="btn btn-outline-primary btn-sm w-100 mt-2" type="submit">{{ "Undo" if state else "Mark done" }}</button>
+          </form>
+          {% else %}
           <a class="btn btn-outline-primary btn-sm w-100 mt-2" href="{{ url_for('main.log_habit', key=h.key) }}">{{ "Log" if state is none else "Edit" }}</a>
+          {% endif %}
         </div>
       {% endfor %}
     </div>

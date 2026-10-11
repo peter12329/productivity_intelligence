@@ -5,7 +5,7 @@ from flask_login import current_user, login_required
 
 from app.extensions import db
 from app.habits import BY_KEY, HABITS, goals_met, is_met, level
-from app.main.forms import HabitForm, LogForm
+from app.main.forms import HabitForm
 from app.models import ProductivityLog
 
 main_bp = Blueprint("main", __name__)
@@ -62,6 +62,7 @@ def build_dashboard(user):
                 days.append(is_met(h, by_date[wd]))   # True / False / None
         habits.append({
             "key": h["key"], "name": h["name"], "color": h["color"],
+            "type": h.get("type", "number"),
             "days": days, "done": sum(1 for x in days if x),
         })
 
@@ -133,24 +134,21 @@ def log_habit(key):
     return render_template("habit_form.html", form=form, habit=habit)
 
 
-@main_bp.route("/log", methods=["GET", "POST"])
+@main_bp.route("/habit/<key>/toggle", methods=["POST"])
 @login_required
-def log_day():
-    form = LogForm()
-    if form.validate_on_submit():
-        log = ProductivityLog.query.filter_by(
-            user_id=current_user.id, log_date=form.log_date.data
-        ).first()
-        is_new = log is None
-        if is_new:
-            log = ProductivityLog(user_id=current_user.id, log_date=form.log_date.data)
-            db.session.add(log)
-        for field in ("study_hours", "sleep_hours", "screen_time", "exercise_minutes",
-                      "caffeine_mg", "stress_level", "break_count", "study_sessions",
-                      "self_rating", "notes"):
-            setattr(log, field, getattr(form, field).data)
-        db.session.commit()
-        flash(("Day saved." if is_new else "Day updated.")
-              + f" Goals met: {goals_met(log)}/{len(HABITS)}.", "success")
-        return redirect(url_for("main.index"))
-    return render_template("log_form.html", form=form)
+def toggle_habit(key):
+    habit = BY_KEY.get(key)
+    if habit is None or habit.get("type") != "check":
+        abort(404)
+
+    log = ProductivityLog.query.filter_by(
+        user_id=current_user.id, log_date=date.today()
+    ).first()
+    if log is None:
+        log = ProductivityLog(user_id=current_user.id, log_date=date.today())
+        db.session.add(log)
+
+    current = getattr(log, habit["field"])
+    setattr(log, habit["field"], None if current else True)
+    db.session.commit()
+    return redirect(url_for("main.index"))

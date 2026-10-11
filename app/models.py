@@ -32,6 +32,12 @@ class ProductivityLog(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
     log_date = db.Column(db.Date, nullable=False, default=date.today)
 
+    study_hours = db.Column(db.Float, nullable=True)
+    sleep_hours = db.Column(db.Float, nullable=True)
+    caffeine_mg = db.Column(db.Integer, nullable=True)
+    stress_level = db.Column(db.Integer, nullable=True)
+    study_sessions = db.Column(db.Integer, nullable=True)
+    journaled = db.Column(db.Boolean, nullable=True)
 
     user = db.relationship("User", backref="logs")
 

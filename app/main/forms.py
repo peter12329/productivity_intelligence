@@ -18,11 +18,5 @@ class HabitForm(FlaskForm):
     value = FloatField("Value", validators=[InputRequired()])
     submit = SubmitField("Save")
 
-    sleep_hours = db.Column(db.Float, nullable=True)
-    caffeine_mg = db.Column(db.int, nullable=True)
-    stress_level = db.Column(db.int, nullable=True)
-    study_sessions = db.Column(db.int, nullable=True)
-    journaled = db.Column(db.bool, nullable=True)
-
     def validate_log_date(self, field):
         _check_date(field)
