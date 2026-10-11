@@ -5,10 +5,13 @@
 <div class="row g-4">
   <div class="col-lg-8">
     <h1 class="display-6 fw-semibold">{{ data.greeting }}, {{ current_user.username }}</h1>
-    <p class="text-muted">Sample data shown until you start logging days.</p>
+    <p class="text-muted">
+      {% if data.total_logs == 0 %}Nothing logged yet. Use the <strong>Log</strong> buttons on the right to start.
+      {% else %}{{ data.total_logs }} day{{ "s" if data.total_logs != 1 }} logged in the last year.{% endif %}
+    </p>
 
     <div class="d-flex justify-content-between small text-muted mb-1">
-      <span>This week</span><span>{{ data.percent }}% achieved</span>
+      <span>This week</span><span>{{ data.percent }}% of goals achieved</span>
     </div>
     <div class="progress mb-4" style="height: 8px;">
       <div class="progress-bar" style="width: {{ data.percent }}%"></div>
@@ -27,7 +30,7 @@
         <tr>
           <td class="habit-name"><span class="dot" style="background: {{ h.color }}"></span>{{ h.name }}</td>
           {% for done in h.days %}
-            <td><div class="habit-cell" {% if done %}style="background: {{ h.color }}"{% endif %}></div></td>
+            <td><div class="habit-cell{% if done is none %} nodata{% endif %}" {% if done %}style="background: {{ h.color }}"{% endif %}></div></td>
           {% endfor %}
           <td class="text-muted small">{{ h.done }} / 7</td>
         </tr>
@@ -35,7 +38,7 @@
       </tbody>
     </table>
 
-    <h2 class="h6">Productivity over the last year</h2>
+    <h2 class="h6">Your last year</h2>
     <div class="heatmap">
       {% for week in data.weeks %}
         <div class="heatmap-col">
@@ -43,7 +46,7 @@
           <div class="heatmap-week">
             {% for c in week %}
               {% if c %}
-                <div class="cell l{{ c.level }}" title="{{ c.date }}: score {{ c.score }}"></div>
+                <div class="cell l{{ c.level }}{% if c.today and not c.logged %} today-empty{% endif %}{% if c.today %} is-today{% endif %}" title="{{ c.tip }}"></div>
               {% else %}
                 <div class="cell empty"></div>
               {% endif %}
@@ -53,28 +56,31 @@
       {% endfor %}
     </div>
     <div class="legend small text-muted mt-2">
-      Less
-      <span class="cell l0"></span><span class="cell l1"></span><span class="cell l2"></span><span class="cell l3"></span><span class="cell l4"></span>
-      More
+      <span class="cell l0"></span> No data
+      <span class="cell today-empty ms-2"></span> Today, not logged
+      <span class="ms-3">Less</span>
+      <span class="cell l1"></span><span class="cell l2"></span><span class="cell l3"></span><span class="cell l4"></span>
+      <span>Full day</span>
     </div>
   </div>
 
   <div class="col-lg-4">
-    <div class="d-flex justify-content-between align-items-center mb-3">
-      <h2 class="h5 m-0">{{ data.today_label }}</h2>
-      <a class="btn btn-primary btn-sm" href="{{ url_for('main.dashboard') }}">Dashboard</a>
-    </div>
+    <h2 class="h5 mb-3">{{ data.today_label }}</h2>
+    {% if not data.today_logged %}
+    <div class="alert alert-warning py-2 small">No data for today yet.</div>
+    {% endif %}
+
     <div class="today-panel">
       {% for h in data.habits %}
-        {% set done = h.days[data.today_index] %}
+        {% set state = h.days[data.today_index] %}
         <div class="today-item" style="border-left-color: {{ h.color }}">
-          <div class="d-flex justify-content-between">
+          <div class="d-flex justify-content-between align-items-center">
             <strong>{{ h.name }}</strong>
-            {% if done %}<span class="badge" style="background: {{ h.color }}">Done</span>{% endif %}
+            {% if state is none %}<span class="badge bg-light text-muted border">No data</span>
+            {% elif state %}<span class="badge" style="background: {{ h.color }}">Done</span>
+            {% else %}<span class="badge bg-secondary">Not met</span>{% endif %}
           </div>
-          {% if not done %}
-            <button type="button" class="btn btn-outline-primary btn-sm w-100 mt-2" disabled>Mark complete</button>
-          {% endif %}
+          <a class="btn btn-outline-primary btn-sm w-100 mt-2" href="{{ url_for('main.log_habit', key=h.key) }}">{{ "Log" if state is none else "Edit" }}</a>
         </div>
       {% endfor %}
     </div>
@@ -82,7 +88,7 @@
 </div>
 
 {% else %}
-<h1>PPIA</h1>
+<h1>Hibi</h1>
 <p>Personal Productivity Intelligence App</p>
 <a class="btn btn-primary btn-lg" href="{{ url_for('auth.login') }}">Log in to get started</a>
 {% endif %}

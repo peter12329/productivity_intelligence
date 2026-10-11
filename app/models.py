@@ -23,6 +23,7 @@ class User(UserMixin, db.Model):
     def check_password(self, password):
         return check_password_hash(self.password_hash, password)
 
+
 class ProductivityLog(db.Model):
     __tablename__ = "productivity_logs"
     __table_args__ = (db.UniqueConstraint("user_id", "log_date", name="uq_user_date"),)
@@ -31,33 +32,8 @@ class ProductivityLog(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
     log_date = db.Column(db.Date, nullable=False, default=date.today)
 
-    study_hours = db.Column(db.Float, nullable=False)
-    sleep_hours = db.Column(db.Float, nullable=False)
-    screen_time = db.Column(db.Float, nullable=False)
-    exercise_minutes = db.Column(db.Integer, nullable=False)
-    caffeine_mg = db.Column(db.Integer, nullable=False)
-    stress_level = db.Column(db.Integer, nullable=False)
-    break_count = db.Column(db.Integer, nullable=False)
-    study_sessions = db.Column(db.Integer, nullable=False)
-    self_rating = db.Column(db.Integer, nullable=True)   # optional 0-100, the ML target later
-    notes = db.Column(db.Text, nullable=True)
 
     user = db.relationship("User", backref="logs")
-
-    def goals_met(self):
-        return sum([
-            self.study_hours >= 3,
-            self.sleep_hours >= 7,
-            self.exercise_minutes >= 20,
-            self.screen_time < 6,
-            self.break_count >= 1,
-        ])
-
-    def level(self):
-        """0-4 colour level for the heatmap."""
-        g = self.goals_met()
-        return 4 if g == 5 else 3 if g == 4 else 2 if g >= 2 else 1
-
 
 
 @login_manager.user_loader

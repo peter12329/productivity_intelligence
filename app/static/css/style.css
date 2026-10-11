@@ -18,3 +18,7 @@
 
 .today-panel { border: 1px solid #dee2e6; border-radius: 12px; padding: 12px; }
 .today-item { border-left: 4px solid #ccc; padding: 8px 10px; margin-bottom: 10px; }
+
+.habit-cell.nodata { background: transparent; border: 2px dashed #d0d7e5; }
+.cell.today-empty { background: #ffc107; }
+.cell.is-today { outline: 1px solid #0d6efd; outline-offset: 1px; }
