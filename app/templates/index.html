@@ -38,10 +38,15 @@
       </tbody>
     </table>
 
-    <h2 class="h6">Your last year</h2>
-    <div class="heatmap">
+    <!-- GITHUB HEATMAP: small by default, expands to full year -->
+    <div class="d-flex justify-content-between align-items-center mb-2">
+      <h2 class="h6 mb-0">Your last year</h2>
+      <button type="button" id="heatmap-toggle" class="btn btn-link btn-sm p-0">Show full year</button>
+    </div>
+
+    <div class="heatmap" id="heatmap">
       {% for week in data.weeks %}
-        <div class="heatmap-col">
+        <div class="heatmap-col{% if loop.revindex > 8 %} old-week{% endif %}">
           <div class="month-label">{{ data.month_labels[loop.index0] }}</div>
           <div class="heatmap-week">
             {% for c in week %}
@@ -55,6 +60,7 @@
         </div>
       {% endfor %}
     </div>
+
     <div class="legend small text-muted mt-2">
       <span class="cell l0"></span> No data
       <span class="cell today-empty ms-2"></span> Today, not logged
@@ -64,12 +70,14 @@
     </div>
   </div>
 
+
   <div class="col-lg-4">
     <h2 class="h5 mb-3">{{ data.today_label }}</h2>
     {% if not data.today_logged %}
     <div class="alert alert-warning py-2 small">No data for today yet.</div>
     {% endif %}
 
+    <!-- panel input user -->
     <div class="today-panel">
       {% for h in data.habits %}
         {% set state = h.days[data.today_index] %}
@@ -94,7 +102,35 @@
   </div>
 </div>
 
+<style>
+  /* collapsed: hide all but the last 8 weeks */
+  .heatmap:not(.expanded) .old-week { display: none; }
+  .heatmap { overflow-x: auto; }
+</style>
+
+<script>
+  (function () {
+    var btn = document.getElementById("heatmap-toggle");
+    var map = document.getElementById("heatmap");
+    if (!btn || !map) return;
+
+    function scrollToLatest() {
+      map.scrollLeft = map.scrollWidth;
+    }
+
+    btn.addEventListener("click", function () {
+      var open = map.classList.toggle("expanded");
+      btn.textContent = open ? "Show less" : "Show full year";
+      scrollToLatest();
+    });
+
+    scrollToLatest();
+    window.addEventListener("load", scrollToLatest);
+  })();
+</script>
+
 {% else %}
+<!-- header -->
 <h1>Hibi</h1>
 <p>Personal Productivity Intelligence App</p>
 <a class="btn btn-primary btn-lg" href="{{ url_for('auth.login') }}">Log in to get started</a>

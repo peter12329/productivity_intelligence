@@ -1,7 +1,80 @@
 {% extends "base.html" %}
-{% block title %}Dashboard - PPIA{% endblock %}
-
 {% block content %}
-<h1 class="h3">Dashboard</h1>
-<p>Only logged-in users can see this page, {{ current_user.username }}.</p>
+<div class="dash">
+  <h1>Dashboard</h1>
+
+  {% if stats.empty %}
+    <p>No data yet. Log a habit and come back.</p>
+  {% else %}
+
+  <div class="cards">
+    <div class="card"><span>Days logged</span><b>{{ stats.summary.total_logs }}</b></div>
+    <div class="card"><span>Avg score</span><b>{{ stats.summary.avg_score }}%</b></div>
+    <div class="card"><span>Best day</span><b>{{ stats.summary.best_day }}</b></div>
+    <div class="card"><span>Best score</span><b>{{ stats.summary.best_score }}%</b></div>
+  </div>
+
+  <h2>Productivity trend</h2>
+  <canvas id="trend" height="110"></canvas>
+
+  <h2>Average by weekday</h2>
+  <canvas id="weekday" height="90"></canvas>
+
+  <h2>Habits</h2>
+  <table class="habit-table">
+    <tr><th>Habit</th><th>Avg</th><th>Goal met</th><th>Streak</th><th>Best</th></tr>
+    {% for h in stats.habits %}
+    <tr>
+      <td><span class="dot" style="background:{{ h.color }}"></span>{{ h.name }}</td>
+      <td>{{ h.average if h.average is not none else "-" }}</td>
+      <td>{{ h.met_rate }}%</td>
+      <td>{{ h.current_streak }}</td>
+      <td>{{ h.best_streak }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+
+  <h2>What moves your score</h2>
+  <table class="habit-table">
+    {% for field, r in stats.correlations.items() %}
+    <tr><td>{{ field }}</td><td>{{ r }}</td></tr>
+    {% endfor %}
+  </table>
+  <small>Correlation shows association, not cause.</small>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script>
+    const s = {{ stats | tojson }};
+    new Chart(document.getElementById("trend"), {
+      type: "line",
+      data: {
+        labels: s.trend.dates,
+        datasets: [
+          {label: "Daily", data: s.trend.score, borderColor: "#aaa", tension: .3},
+          {label: "7-day avg", data: s.trend.rolling, borderColor: "#6f42c1", tension: .3}
+        ]
+      },
+      options: {scales: {y: {min: 0, max: 100}}}
+    });
+    new Chart(document.getElementById("weekday"), {
+      type: "bar",
+      data: {
+        labels: Object.keys(s.weekday),
+        datasets: [{label: "Avg score", data: Object.values(s.weekday), backgroundColor: "#6f42c1"}]
+      },
+      options: {scales: {y: {min: 0, max: 100}}}
+    });
+  </script>
+  {% endif %}
+</div>
+
+<style>
+  .cards {display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:12px; margin:16px 0}
+  .card {padding:14px; border-radius:10px; background:rgba(127,127,127,.12)}
+  .card span {display:block; font-size:.8rem; opacity:.7}
+  .card b {font-size:1.4rem}
+  .habit-table {width:100%; border-collapse:collapse; margin:8px 0 20px}
+  .habit-table th, .habit-table td {text-align:left; padding:6px 8px; border-bottom:1px solid rgba(127,127,127,.25)}
+  .dot {display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:8px}
+</style>
 {% endblock %}

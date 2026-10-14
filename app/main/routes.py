@@ -1,12 +1,14 @@
 from datetime import date, datetime, timedelta
 
-from flask import Blueprint, abort, flash, redirect, render_template, request, url_for
+from flask import (Blueprint, abort, flash, jsonify, redirect,
+                   render_template, request, url_for)
 from flask_login import current_user, login_required
 
 from app.extensions import db
 from app.habits import BY_KEY, HABITS, goals_met, is_met, level
 from app.main.forms import HabitForm
 from app.models import ProductivityLog
+from app.stats import dashboard_stats
 
 main_bp = Blueprint("main", __name__)
 
@@ -94,14 +96,20 @@ def index():
 @main_bp.route("/dashboard")
 @login_required
 def dashboard():
-    return render_template("dashboard.html")
+    return render_template("dashboard.html", stats=dashboard_stats(current_user))
+
+
+@main_bp.route("/api/dashboard")
+@login_required
+def api_dashboard():
+    return jsonify(dashboard_stats(current_user))
 
 
 @main_bp.route("/habit/<key>", methods=["GET", "POST"])
 @login_required
 def log_habit(key):
     habit = BY_KEY.get(key)
-    if habit is None:
+    if habit is None or habit.get("type") == "check":
         abort(404)
 
     form = HabitForm()
@@ -113,7 +121,9 @@ def log_habit(key):
             form.value.data = getattr(existing, habit["field"])
 
     if form.validate_on_submit():
-        if not habit["min"] <= form.value.data <= habit["max"]:
+        if form.log_date.data > date.today():
+            form.log_date.errors.append("Date can't be in the future.")
+        elif not habit["min"] <= form.value.data <= habit["max"]:
             form.value.errors.append(f"Enter a value from {habit['min']} to {habit['max']}.")
         else:
             log = ProductivityLog.query.filter_by(
@@ -152,3 +162,9 @@ def toggle_habit(key):
     setattr(log, habit["field"], None if current else True)
     db.session.commit()
     return redirect(url_for("main.index"))
+
+@main_bp.route("/profile")
+@login_required
+def profile():
+    total = ProductivityLog.query.filter_by(user_id=current_user.id).count()
+    return render_template("profile.html", total_logs=total)

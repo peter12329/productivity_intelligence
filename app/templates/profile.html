@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block content %}
+<h1 class="h3 mb-3">Profile</h1>
+<div class="card p-3" style="max-width: 400px;">
+  <p class="mb-1"><strong>Username:</strong> {{ current_user.username }}</p>
+  <p class="mb-0"><strong>Days logged:</strong> {{ total_logs }}</p>
+</div>
+{% endblock %}

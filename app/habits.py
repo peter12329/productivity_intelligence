@@ -21,7 +21,7 @@ HABITS = [
         "min": 0, "max": 10, "step": 1,
         "cast": int,
         "color": "#6c757d",
-        "met": lambda v: v >= 5,      
+        "met": lambda v: v <= 5,      
     },
     {
         "key": "stress", "name": "Stress 5 or lower", "label": "Stress level",
