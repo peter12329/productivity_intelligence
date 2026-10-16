@@ -1,9 +1,11 @@
 """
-generate_data.py: synthetic daily productivity dataset for PPIA.
+dummydataset.py: synthetic daily productivity dataset for PPIA.
 
-Run from the project root:
-    python ml/generate_data.py
-    python ml/generate_data.py --seed 7 --rows 5000 --threshold 65
+Run from the project root (as a module, never the VS Code Run button):
+    python -m ml.dummydataset
+    python -m ml.dummydataset --seed 7 --rows 5000
+
+Writes datasets/productivity_logs.csv (the path set in ml/settings.py).
 
 WHAT THIS IS
     Controlled experiment data, NOT evidence about real human behaviour.
@@ -11,33 +13,32 @@ WHAT THIS IS
 
 HOW IT IS BUILT
     * N_PEOPLE synthetic people, each simulated for consecutive days.
-    * Each person has a personal baseline (some people sleep more, some are
-      more productive in general).
+    * Each person has a personal baseline.
     * Stress follows a slow AR(1) process, so bad days cluster together.
-    * Features are correlated: stress lowers sleep, study hours drive study
-      sessions, caffeine rises with study and short sleep, etc.
-    * productivity_score is a NONLINEAR function of the features:
-        - sleep: inverted U (best near 7.5 h, penalised above and below)
-        - study: diminishing returns, then a penalty past ~8 h
-        - exercise: diminishing returns, small penalty for extreme amounts
-        - caffeine: inverted U (best near 150 mg)
-        - screen time: penalty above ~5 h
-        - stress: roughly linear penalty, extra penalty at the top end
-      plus momentum from the previous day's score and random noise.
+    * Features are correlated (stress lowers sleep, study hours drive study
+      sessions, caffeine rises with study and short sleep, stress lowers the
+      chance of journaling, ...).
+    * productivity_score is a NONLINEAR function of the features plus
+      momentum from the previous day and random noise.
     * ~0.5% of rows get extreme outliers; ~3% of values are blanked in four
-      input columns to mimic missing data.
+      input columns to mimic missing data (train.py drops those rows).
 
-TARGETS
-    productivity_score  continuous, 0 to 100
-    productive_day      1 if productivity_score >= THRESHOLD (default 60)
+COLUMNS THE ML MODULE USES (see ml/settings.py)
+    Features: study_hours, caffeine_mg, stress_level, study_sessions, journaled
+    Targets : productivity_score (0-100), productivity_level (low/medium/high)
+
+CAFFEINE SCALE
+    The score formula works in real milligrams internally. The saved
+    caffeine_mg column is converted to the app's 0-10 scale (mg / 60, so
+    600 mg = 10) because that is what the app's habit form logs.
 
 LEAKAGE WARNING
-    previous_day_productivity is legitimate (known before the day starts).
-    NEVER use productivity_score as an input for either target, and
-    NEVER use productive_day as an input for the regression.
+    previous_day_productivity is legitimate (known before the day starts) but
+    is not a model feature. NEVER use productivity_score, productivity_level
+    or productive_day as an input.
 
 EXPERIMENT-ONLY COLUMNS (do not exist in the production app)
-    person_id, date. Use them for chronological or per-person splits.
+    person_id, date, and the extra columns (sleep, screen time, ...).
 """
 
 import argparse
@@ -46,17 +47,19 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from ml.settings import DATASET_PATH, LEVEL_BINS, LEVELS
+
 # ----------------------------- defaults ------------------------------------
 DEFAULT_SEED = 42
-DEFAULT_ROWS = 10_000
+DEFAULT_ROWS = 2_000
 N_PEOPLE = 20
 DEFAULT_THRESHOLD = 60.0   # productive_day = score >= this
 MISSING_RATE = 0.03        # per selected column
 OUTLIER_RATE = 0.005       # per row
 MISSING_COLUMNS = ["sleep_hours", "screen_time", "exercise_minutes", "caffeine_mg"]
+MG_PER_POINT = 60          # caffeine: 60 mg = 1 point on the app's 0-10 scale
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_OUTPUT = PROJECT_ROOT / "datasets" / "productivity.csv"
+DEFAULT_OUTPUT = DATASET_PATH
 
 
 def simulate_person(rng, n_days, start_date):
@@ -70,6 +73,7 @@ def simulate_person(rng, n_days, start_date):
     base_study = rng.normal(4.0, 0.9)
     base_screen = rng.normal(6.0, 1.2)
     base_stress = rng.normal(5.0, 0.8)
+    base_journal = rng.normal(0.0, 0.12)      # some people journal more
 
     # Stress: AR(1) so consecutive days are related
     stress_latent = np.empty(n_days)
@@ -90,6 +94,10 @@ def simulate_person(rng, n_days, start_date):
     sessions = np.clip(sessions, 0, None)
     sessions[study < 0.3] = 0
 
+    # Journaling: less likely on stressful days
+    p_journal = np.clip(0.55 + base_journal - 0.05 * (stress - 5), 0.05, 0.95)
+    journaled = (rng.random(n_days) < p_journal).astype(float)
+
     # Sleep: weekends longer, stress shortens it
     sleep = (
         base_sleep + 0.6 * weekend - 0.18 * (stress - 5) + rng.normal(0, 0.9, n_days)
@@ -107,7 +115,7 @@ def simulate_person(rng, n_days, start_date):
     exercise[rng.random(n_days) < 0.42] = 0.0
     exercise = np.clip(exercise, 0, 150)
 
-    # Caffeine: rises with study and short sleep, some people drink none
+    # Caffeine (mg): rises with study and short sleep, some people drink none
     caffeine = 60 + 22 * study + 25 * np.clip(7.5 - sleep, 0, None) + rng.normal(0, 55, n_days)
     caffeine[rng.random(n_days) < 0.12] = 0.0
     caffeine = np.clip(caffeine, 0, 600)
@@ -128,6 +136,7 @@ def simulate_person(rng, n_days, start_date):
             "stress_level": stress,
             "break_count": breaks,
             "study_sessions": sessions,
+            "journaled": journaled,
         }
     )
 
@@ -162,10 +171,11 @@ def compute_score(df, rng, person_effect):
     study = df["study_hours"].to_numpy()
     screen = df["screen_time"].to_numpy()
     exercise = df["exercise_minutes"].to_numpy()
-    caffeine = df["caffeine_mg"].to_numpy()
+    caffeine = df["caffeine_mg"].to_numpy()       # still in mg here
     stress = df["stress_level"].to_numpy()
     breaks = df["break_count"].to_numpy()
     sessions = df["study_sessions"].to_numpy()
+    journaled = df["journaled"].to_numpy()
     dow = df["day_of_week"].to_numpy()
 
     # Nonlinear effects (all vectorised)
@@ -177,10 +187,11 @@ def compute_score(df, rng, person_effect):
     stress_eff = -2.2 * (stress - 5) - 0.6 * np.clip(stress - 8, 0, None) ** 2
     break_eff = 1.0 * np.minimum(breaks, 5) - 0.8 * np.clip(breaks - sessions * 2, 0, None)
     weekend_eff = np.where(dow >= 5, -2.0, 0.0)
+    journal_eff = 3.0 * journaled
 
     static = (
         48 + person_effect + sleep_eff + study_eff + exercise_eff + caffeine_eff
-        + screen_eff + stress_eff + break_eff + weekend_eff
+        + screen_eff + stress_eff + break_eff + weekend_eff + journal_eff
     )
 
     prev_score = 50.0 + person_effect          # day 0 has no real "yesterday"
@@ -218,25 +229,28 @@ def generate(rows, seed, threshold):
 
     df = pd.concat(frames, ignore_index=True).iloc[:rows].copy()
 
+    # Convert caffeine from mg (used by the score formula) to the app's 0-10 scale
+    df["caffeine_mg"] = (df["caffeine_mg"] / MG_PER_POINT).clip(0, 10)
+
     # Rounding to realistic precision
-    for col in ["study_hours", "sleep_hours", "screen_time"]:
+    for col in ["study_hours", "sleep_hours", "screen_time", "caffeine_mg"]:
         df[col] = df[col].round(1)
     df["exercise_minutes"] = df["exercise_minutes"].round(0)
-    df["caffeine_mg"] = df["caffeine_mg"].round(0).astype(int)
-    for col in ["stress_level", "break_count", "study_sessions"]:
+    for col in ["stress_level", "break_count", "study_sessions", "journaled"]:
         df[col] = df[col].astype(int)
     df["productivity_score"] = df["productivity_score"].round(1)
     df["previous_day_productivity"] = df["previous_day_productivity"].round(1)
 
-    # Label is derived BEFORE masking so it reflects the true score
+    # Labels are derived BEFORE masking so they reflect the true score
     df["productive_day"] = (df["productivity_score"] >= threshold).astype(int)
+    df["productivity_level"] = pd.cut(
+        df["productivity_score"], bins=LEVEL_BINS, labels=LEVELS
+    ).astype(str)
 
     # Missing values in selected INPUT columns only (never in targets)
-    # Use nullable Int64 so caffeine stays integer-like when blanked
-    df["caffeine_mg"] = df["caffeine_mg"].astype("Int64")
     for col in MISSING_COLUMNS:
         mask = rng.random(len(df)) < MISSING_RATE
-        df.loc[mask, col] = pd.NA
+        df.loc[mask, col] = np.nan
 
     df["date"] = df["date"].dt.strftime("%Y-%m-%d")
 
@@ -244,8 +258,8 @@ def generate(rows, seed, threshold):
         "person_id", "date", "day_of_week",
         "study_hours", "sleep_hours", "screen_time", "exercise_minutes",
         "caffeine_mg", "stress_level", "break_count", "study_sessions",
-        "previous_day_productivity",
-        "productivity_score", "productive_day",
+        "journaled", "previous_day_productivity",
+        "productivity_score", "productivity_level", "productive_day",
     ]
     return df[cols]
 
@@ -265,6 +279,9 @@ def main():
     print(f"Saved {len(df)} rows to {args.output}")
     print(f"Seed: {args.seed} | productive threshold: {args.threshold}")
     print(f"Productive-day share: {df['productive_day'].mean():.1%}")
+    print("Level shares:")
+    print(df["productivity_level"].value_counts(normalize=True)
+          .reindex(LEVELS).map("{:.1%}".format).to_string())
     print("Missing values per column:")
     print(df.isna().sum()[lambda s: s > 0].to_string())
 

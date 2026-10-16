@@ -21,6 +21,10 @@ def create_app(config_class=Config):
     from app.auth.routes import auth_bp
     app.register_blueprint(auth_bp)
 
+    from app.insights.routes import insights
+    app.register_blueprint(insights)
+
+
     with app.app_context():
         db.create_all()
 
