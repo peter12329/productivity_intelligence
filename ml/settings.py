@@ -7,11 +7,10 @@ ARTIFACT_DIR = ROOT / "artifacts"
 RANDOM_STATE = 42
 
 FEATURES = [
-    "study_hours",
-    "caffeine_mg",
-    "stress_level",
-    "study_sessions",
-    "journaled",
+       "deep_work", "sleep_hours", "caffeine_level", "stress_level",
+       "journaled", "log_streak", "disruptions", "junk_food",
+       "task_difficulty", "deep_work_days_prev7", "day_type", "weather",
+       "free_hours",
 ]
 
 REGRESSION_TARGET = "productivity_score"

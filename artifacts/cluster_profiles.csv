@@ -1,4 +1,3 @@
-cluster,days,study_hours,caffeine_mg,stress_level,study_sessions,journaled,productivity_score
-0,3101,2.49,1.81,5.53,1.59,0.0,62.15
-1,3209,4.76,3.14,4.89,3.36,0.66,71.6
-2,3430,2.26,1.61,4.73,1.38,1.0,65.25
+cluster,days,deep_work,sleep_hours,caffeine_level,stress_level,journaled,log_streak,disruptions,junk_food,task_difficulty,deep_work_days_prev7,free_hours,productivity_score,day_type,weather
+0,1073,2.38,6.87,2.82,5.39,0.49,6.44,1.5,0.28,3.17,2.62,5.22,59.66,class,sunny
+1,699,4.04,7.11,3.69,4.87,0.53,6.92,0.64,0.27,2.7,3.06,8.5,63.76,free,sunny

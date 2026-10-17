@@ -32,12 +32,23 @@ class ProductivityLog(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
     log_date = db.Column(db.Date, nullable=False, default=date.today)
 
+    # Original habits (study_hours stores deep work hours, caffeine_mg stores a 0-10 level)
     study_hours = db.Column(db.Float, nullable=True)
     sleep_hours = db.Column(db.Float, nullable=True)
     caffeine_mg = db.Column(db.Integer, nullable=True)
     stress_level = db.Column(db.Integer, nullable=True)
     study_sessions = db.Column(db.Integer, nullable=True)
     journaled = db.Column(db.Boolean, nullable=True)
+
+    # New goal habits
+    disruptions = db.Column(db.Integer, nullable=True)       # meetings / interruptions
+    junk_food = db.Column(db.Integer, nullable=True)         # 0 = no, 1 = yes
+
+    # Context inputs (no goal)
+    task_difficulty = db.Column(db.Integer, nullable=True)   # 1-5
+    free_hours = db.Column(db.Float, nullable=True)
+    day_type = db.Column(db.String(16), nullable=True)       # class / free / deadline
+    weather = db.Column(db.String(16), nullable=True)        # sunny / cloudy / rainy
 
     user = db.relationship("User", backref="logs")
 

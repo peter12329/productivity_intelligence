@@ -6,70 +6,147 @@
 Returns one of:
     None                                  models not trained, or something broke
                                           (the template then hides the card)
-    {"status": "no_log"}                  the user has not logged anything yet
-    {"status": "incomplete", "message"}   no recent log has the fields the model needs
+    {"status": "no_log"}                  no log in the last month
+    {"status": "incomplete", "message"}   a log exists but inputs are missing;
+                                          the message names them
     {"status": "ok", "score", "level", "error", "log_id", "log_date"}
+
+How the inputs are built
+    The model's inputs are named like the DATASET (ml/settings.py FEATURES),
+    but the app stores them under different names, so DB_FIELDS maps one to the
+    other (deep_work lives in study_hours, caffeine_level in caffeine_mg, ...).
+    Two inputs are not stored at all; they are computed from the days before
+    the one being estimated (app.habits):
+        log_streak            consecutive logged days ending the day before
+        deep_work_days_prev7  how many of the previous 7 days met the goal
 
 How the log is chosen
     Logs are created one habit at a time, so today's row is often half empty.
-    This looks at the user's 14 most recent log dates and uses the newest one
-    that has every NUMERIC input. A check habit (journaled) that is None means
-    "not done" (the toggle sets None on Undo), so it counts as 0.
+    This looks at the newest 14 logs (last ~month) and uses the newest one that
+    has every input. If none is complete, the message names what the NEWEST
+    log is missing, so the user knows what to log next. A check habit
+    (journaled) that is None means "not done", so it counts as 0. A dropdown
+    habit that is None (junk food, day type, weather, ...) is really missing.
 
 Design rule: an EXPERIMENTAL feature must never be able to break the home page,
 so every failure is caught here and logged instead of raised.
 """
+from datetime import date, timedelta
+
 from flask import current_app
 
 from ml.predict import ModelsNotTrainedError, predict_day
 from ml.settings import FEATURES
 
-CHECK_FEATURES = ("journaled",)                       # None means "not done"
-NUMERIC_FEATURES = [f for f in FEATURES if f not in CHECK_FEATURES]
+# dataset feature name -> ProductivityLog column
+DB_FIELDS = {
+    "deep_work": "study_hours",
+    "sleep_hours": "sleep_hours",
+    "caffeine_level": "caffeine_mg",       # stores the 0-10 LEVEL, not mg
+    "stress_level": "stress_level",
+    "journaled": "journaled",
+    "disruptions": "disruptions",
+    "junk_food": "junk_food",
+    "task_difficulty": "task_difficulty",
+    "day_type": "day_type",
+    "weather": "weather",
+    "free_hours": "free_hours",
+}
+COMPUTED = ("log_streak", "deep_work_days_prev7")
+CHECK_FEATURES = ("journaled",)            # None means "not done"
+
+LABELS = {
+    "deep_work": "Deep work", "sleep_hours": "Sleep",
+    "caffeine_level": "Caffeine", "stress_level": "Stress",
+    "disruptions": "Disruptions", "junk_food": "Junk food",
+    "task_difficulty": "Task difficulty", "day_type": "Day type",
+    "weather": "Weather", "free_hours": "Free hours",
+}
+
 RECENT_LOGS = 14
+HISTORY_DAYS = 32      # enough to compute a 14-day streak for a 14-day-old log
+
+
+def _inputs(log, by_date, log_streak, deep_work_days_prev7):
+    """Return (values, missing) for one log row."""
+    values, missing = {}, []
+    for f in FEATURES:
+        if f == "log_streak":
+            values[f] = log_streak(by_date, log.log_date)
+        elif f == "deep_work_days_prev7":
+            values[f] = deep_work_days_prev7(by_date, log.log_date)
+        else:
+            v = getattr(log, DB_FIELDS[f], None)
+            if f in CHECK_FEATURES:
+                v = 1 if v else 0
+            if v is None:
+                missing.append(f)
+                continue
+            values[f] = int(v) if isinstance(v, bool) else v
+    return values, missing
+
+
+def _missing_message(log, missing):
+    names = ", ".join(LABELS.get(f, f) for f in missing)
+    if log.log_date == date.today():
+        return f"To estimate today, still log: {names}."
+    return (f"Your latest log ({log.log_date.isoformat()}) is missing: "
+            f"{names}. Log them to get an estimate.")
 
 
 def latest_estimate(user_id: int):
     try:
-        from app.models import ProductivityLog   # imported here to avoid import cycles
+        from app.habits import deep_work_days_prev7, log_streak
+        from app.models import ProductivityLog   # here to avoid import cycles
 
-        absent = [f for f in FEATURES if not hasattr(ProductivityLog, f)]
+        unknown = [f for f in FEATURES
+                   if f not in DB_FIELDS and f not in COMPUTED]
+        if unknown:
+            return {"status": "incomplete",
+                    "message": "The app does not know how to build: "
+                               + ", ".join(unknown) + " (see DB_FIELDS in "
+                               "app/insights/service.py)."}
+        absent = sorted({DB_FIELDS[f] for f in FEATURES if f in DB_FIELDS
+                         and not hasattr(ProductivityLog, DB_FIELDS[f])})
         if absent:
             return {"status": "incomplete",
-                    "message": "The log table has no column named: " + ", ".join(absent) + "."}
+                    "message": "The log table has no column named: "
+                               + ", ".join(absent) + "."}
 
-        logs = (ProductivityLog.query
-                .filter_by(user_id=user_id)
+        since = date.today() - timedelta(days=HISTORY_DAYS)
+        rows = (ProductivityLog.query
+                .filter(ProductivityLog.user_id == user_id,
+                        ProductivityLog.log_date >= since)
                 .order_by(ProductivityLog.log_date.desc())
-                .limit(RECENT_LOGS)
                 .all())
-        if not logs:
+        if not rows:
             return {"status": "no_log"}
+        by_date = {r.log_date: r for r in rows}
 
-        log = next((l for l in logs
-                    if all(getattr(l, f) is not None for f in NUMERIC_FEATURES)), None)
-        if log is None:
-            return {"status": "incomplete",
-                    "message": "None of your last " + str(len(logs)) +
-                               " logged days has all of: " + ", ".join(NUMERIC_FEATURES) + "."}
+        newest_missing = None
+        for log in rows[:RECENT_LOGS]:
+            values, missing = _inputs(log, by_date, log_streak,
+                                      deep_work_days_prev7)
+            if missing:
+                if newest_missing is None:
+                    newest_missing = (log, missing)
+                continue
+            result = predict_day(values)
+            d = log.log_date
+            return {
+                "status": "ok",
+                "score": result["predicted_score"],
+                "level": result["predicted_level"],
+                "error": result["typical_error_points"],
+                "log_id": log.id,
+                "log_date": d.isoformat() if hasattr(d, "isoformat") else str(d),
+            }
 
-        values = {f: getattr(log, f) for f in NUMERIC_FEATURES}
-        for f in CHECK_FEATURES:
-            values[f] = 1 if getattr(log, f) else 0
-
-        result = predict_day(values)
-        d = getattr(log, "log_date", None)
-        return {
-            "status": "ok",
-            "score": result["predicted_score"],
-            "level": result["predicted_level"],
-            "error": result["typical_error_points"],
-            "log_id": log.id,
-            "log_date": d.isoformat() if hasattr(d, "isoformat") else (str(d) if d else None),
-        }
+        log, missing = newest_missing
+        return {"status": "incomplete", "message": _missing_message(log, missing)}
     except ModelsNotTrainedError:
         return None
-    except ValueError as exc:                    # value outside the model's valid range
+    except ValueError as exc:                    # value outside the model's range
         return {"status": "incomplete", "message": str(exc)}
     except Exception:                            # never break the home page
         current_app.logger.exception("ML estimate failed")

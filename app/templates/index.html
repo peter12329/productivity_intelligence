@@ -101,11 +101,27 @@
         </form>
         {% else %}
         <a class="btn btn-outline-primary btn-sm w-100 mt-2" href="{{ url_for('main.log_habit', key=h.key) }}">{{ "Log" if state is none else "Edit" }}</a>
-        <a class="small d-block mt-1" href="{{ url_for('main.log_habit', key=h.key) }}">Log another date</a>
         {% endif %}
       </div>
     {% endfor %}
   </div>
+
+    <!-- Today's context: inputs with no goal that the estimate still needs -->
+    {% if data.context %}
+    <div class="today-panel mt-3">
+      <h3 class="h6 mb-2">Today's context</h3>
+      {% for c in data.context %}
+      <div class="today-item" style="border-left-color: {{ c.color }}">
+        <div class="d-flex justify-content-between align-items-center">
+          <strong>{{ c.name }}</strong>
+          {% if c.shown %}<span class="small text-muted">{{ c.shown }}</span>
+          {% else %}<span class="badge bg-light text-muted border">Not set</span>{% endif %}
+        </div>
+        <a class="btn btn-outline-primary btn-sm w-100 mt-2" href="{{ url_for('main.log_habit', key=c.key) }}">{{ "Edit" if c.shown else "Log" }}</a>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
 
     <!-- ML estimate (experimental): data.estimate is set by the main route; hidden if absent -->
     {% if data.estimate %}
@@ -136,10 +152,16 @@
   </div>
 </div>
 
+
+
+
+
 <style>
   /* collapsed: hide all but the last 8 weeks */
   .heatmap:not(.expanded) .old-week { display: none; }
   .heatmap { overflow-x: auto; }
+  #estimate-card { scroll-margin-top: 1rem; transition: box-shadow .3s; }
+  #estimate-card.flash { box-shadow: 0 0 0 .25rem rgba(13, 110, 253, .35); }
 </style>
 
 <script>
@@ -161,14 +183,7 @@
     scrollToLatest();
     window.addEventListener("load", scrollToLatest);
   })();
-</script>
 
-<style>
-  #estimate-card { scroll-margin-top: 1rem; transition: box-shadow .3s; }
-  #estimate-card.flash { box-shadow: 0 0 0 .25rem rgba(13, 110, 253, .35); }
-</style>
-
-<script>
   (function () {
     var btn = document.getElementById("score-jump");
     var card = document.getElementById("estimate-card");

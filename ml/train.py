@@ -7,6 +7,14 @@ Saves to artifacts/:
     regressor.joblib, classifier.joblib, kmeans.joblib,
     metadata.json, cluster_profiles.csv
 
+FEATURE TYPES
+    FEATURES (in ml/settings.py) may mix numbers and text. Any feature whose
+    column is not numeric in the data (day_type, weather) is one-hot encoded
+    inside each model's pipeline; numbers are scaled for the linear models and
+    clustering. Because the encoding is part of the saved pipeline, a
+    prediction needs a one-row DataFrame with the FEATURES column names
+    (not a plain list or array).
+
 VALIDATION (what changed vs the first version)
     Rows from the same person are strongly related (the score carries momentum
     from the previous day). A shuffled split would put the same person in both
@@ -34,7 +42,9 @@ import joblib
 import numpy as np
 import pandas as pd
 import sklearn
+from pandas.api.types import is_numeric_dtype
 from sklearn.cluster import KMeans
+from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.metrics import (accuracy_score, classification_report,
@@ -45,7 +55,7 @@ from sklearn.model_selection import (GroupKFold, GroupShuffleSplit, KFold,
                                      StratifiedKFold, cross_validate,
                                      train_test_split)
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 from ml.settings import (ARTIFACT_DIR, CLASSIFICATION_TARGET, DATASET_PATH,
                          FEATURES, LEVELS, N_CLUSTERS_RANGE, RANDOM_STATE,
@@ -67,6 +77,68 @@ DISCLAIMER = ("Trained on synthetic (simulated) data. Metrics show how well the 
               "they would predict a real person.")
 
 
+# Columns that must never be model inputs (they are, or come from, the answer).
+LEAKY = {"productivity_score", "productivity_level", "productive_day",
+         "previous_day_productivity"}
+
+
+# ------------------------------------------------------ feature preprocessing
+def split_feature_types(df: pd.DataFrame):
+    """Return (numeric, categorical) lists, in FEATURES order.
+
+    A feature is categorical when its column is not numeric in the data
+    (day_type, weather). Those are one-hot encoded; the rest are numbers.
+    """
+    cat = [c for c in FEATURES if not is_numeric_dtype(df[c])]
+    num = [c for c in FEATURES if c not in cat]
+    return num, cat
+
+
+def make_prep(num, cat, scale: bool) -> ColumnTransformer:
+    """Numbers are scaled (linear models / clustering) or passed through
+    (trees); categoricals are one-hot encoded. Unknown categories at
+    prediction time become all zeros instead of crashing."""
+    parts = [("num", StandardScaler() if scale else "passthrough", num)]
+    if cat:
+        parts.append(("cat", OneHotEncoder(handle_unknown="ignore",
+                                           sparse_output=False), cat))
+    return ColumnTransformer(parts)
+
+
+def _original_feature(name: str, cat) -> str:
+    """'cat__day_type_class' -> 'day_type', 'num__deep_work' -> 'deep_work'."""
+    name = name.split("__", 1)[-1]
+    for c in cat:
+        if name.startswith(c + "_"):
+            return c
+    return name
+
+
+def feature_importance(model, cat):
+    """Tree importances summed back to the original features (one-hot
+    columns of day_type are added up into a single 'day_type' value)."""
+    est = model.named_steps["model"]
+    if not hasattr(est, "feature_importances_"):
+        return None
+    names = model.named_steps["prep"].get_feature_names_out()
+    out = {}
+    for n, v in zip(names, est.feature_importances_):
+        k = _original_feature(n, cat)
+        out[k] = out.get(k, 0.0) + float(v)
+    return {k: round(v, 4) for k, v in sorted(out.items(), key=lambda kv: -kv[1])}
+
+
+def linear_coefficients(model):
+    """Standardised coefficients of a linear regressor (sign = direction)."""
+    est = model.named_steps["model"]
+    if not hasattr(est, "coef_") or np.ndim(est.coef_) != 1:
+        return None
+    names = model.named_steps["prep"].get_feature_names_out()
+    pairs = {n.split("__", 1)[-1]: round(float(c), 4)
+             for n, c in zip(names, est.coef_)}
+    return dict(sorted(pairs.items(), key=lambda kv: -abs(kv[1])))
+
+
 # --------------------------------------------------------------------- data
 def load_data() -> pd.DataFrame:
     if not DATASET_PATH.exists():
@@ -74,6 +146,9 @@ def load_data() -> pd.DataFrame:
             f"Dataset not found at {DATASET_PATH}.\n"
             "Generate it first:  python -m ml.dummydataset --rows 10000"
         )
+    leaky = sorted(LEAKY & set(FEATURES))
+    if leaky:
+        raise SystemExit(f"FEATURES must not contain answer columns: {leaky}")
     df = pd.read_csv(DATASET_PATH)
     needed = FEATURES + [REGRESSION_TARGET, CLASSIFICATION_TARGET]
     missing = [c for c in needed if c not in df.columns]
@@ -133,21 +208,25 @@ def _groups(train_df):
 
 
 # ---------------------------------------------------------------- regression
-def regression_candidates(n_rows: int) -> dict:
+def regression_candidates(n_rows: int, num, cat) -> dict:
     small = n_rows < SMALL_N
     candidates = {
-        "ridge": Pipeline([("scale", StandardScaler()),
+        "ridge": Pipeline([("prep", make_prep(num, cat, scale=True)),
                            ("model", Ridge(alpha=1.0))]),
-        "random_forest": RandomForestRegressor(
-            n_estimators=300,
-            max_depth=4 if small else None,
-            min_samples_leaf=5 if small else 3,
-            random_state=RANDOM_STATE, n_jobs=-1),
+        "random_forest": Pipeline([
+            ("prep", make_prep(num, cat, scale=False)),
+            ("model", RandomForestRegressor(
+                n_estimators=300,
+                max_depth=4 if small else None,
+                min_samples_leaf=5 if small else 3,
+                random_state=RANDOM_STATE, n_jobs=-1))]),
     }
     if use_xgb(n_rows):
-        candidates["xgboost"] = XGBRegressor(
-            n_estimators=400, learning_rate=0.05, max_depth=4,
-            subsample=0.9, random_state=RANDOM_STATE, n_jobs=-1)
+        candidates["xgboost"] = Pipeline([
+            ("prep", make_prep(num, cat, scale=False)),
+            ("model", XGBRegressor(
+                n_estimators=400, learning_rate=0.05, max_depth=4,
+                subsample=0.9, random_state=RANDOM_STATE, n_jobs=-1))])
     return candidates
 
 
@@ -157,7 +236,8 @@ def regression_metrics(y_true, pred) -> dict:
             "rmse": round(float(np.sqrt(mean_squared_error(y_true, pred))), 3)}
 
 
-def train_regression(X_train, y_train, X_test=None, y_test=None, groups=None):
+def train_regression(X_train, y_train, X_test=None, y_test=None, groups=None,
+                     num=(), cat=()):
     n = len(X_train) + (0 if X_test is None else len(X_test))
     if groups is not None:
         cv = GroupKFold(n_splits=min(5, groups.nunique()))
@@ -168,7 +248,7 @@ def train_regression(X_train, y_train, X_test=None, y_test=None, groups=None):
     scoring = {"r2": "r2", "mae": "neg_mean_absolute_error"}
 
     rows, fitted = [], {}
-    for name, model in regression_candidates(n).items():
+    for name, model in regression_candidates(n, num, cat).items():
         res = cross_validate(model, X_train, y_train, cv=cv,
                              groups=groups, scoring=scoring)
         model.fit(X_train, y_train)
@@ -187,28 +267,32 @@ def train_regression(X_train, y_train, X_test=None, y_test=None, groups=None):
 
 
 # ------------------------------------------------------------ classification
-def classification_candidates(n_rows: int) -> dict:
+def classification_candidates(n_rows: int, num, cat) -> dict:
     small = n_rows < SMALL_N
     candidates = {
         "logistic_regression": Pipeline([
-            ("scale", StandardScaler()),
+            ("prep", make_prep(num, cat, scale=True)),
             ("model", LogisticRegression(max_iter=1000))]),
-        "random_forest": RandomForestClassifier(
-            n_estimators=300,
-            max_depth=4 if small else None,
-            min_samples_leaf=5 if small else 3,
-            random_state=RANDOM_STATE, n_jobs=-1),
+        "random_forest": Pipeline([
+            ("prep", make_prep(num, cat, scale=False)),
+            ("model", RandomForestClassifier(
+                n_estimators=300,
+                max_depth=4 if small else None,
+                min_samples_leaf=5 if small else 3,
+                random_state=RANDOM_STATE, n_jobs=-1))]),
     }
     if use_xgb(n_rows):
-        candidates["xgboost"] = XGBClassifier(
-            n_estimators=300, learning_rate=0.05, max_depth=4,
-            subsample=0.9, random_state=RANDOM_STATE,
-            eval_metric="mlogloss", n_jobs=-1)
+        candidates["xgboost"] = Pipeline([
+            ("prep", make_prep(num, cat, scale=False)),
+            ("model", XGBClassifier(
+                n_estimators=300, learning_rate=0.05, max_depth=4,
+                subsample=0.9, random_state=RANDOM_STATE,
+                eval_metric="mlogloss", n_jobs=-1))])
     return candidates
 
 
 def train_classification(X_train, y_train, X_test=None, y_test=None,
-                         groups=None):
+                         groups=None, num=(), cat=()):
     n = len(X_train) + (0 if X_test is None else len(X_test))
     min_class = int(pd.Series(y_train).value_counts().min())
     if min_class < 2:
@@ -226,7 +310,7 @@ def train_classification(X_train, y_train, X_test=None, y_test=None,
     scoring = {"f1": "f1_macro", "acc": "accuracy"}
 
     rows, fitted = [], {}
-    for name, model in classification_candidates(n).items():
+    for name, model in classification_candidates(n, num, cat).items():
         res = cross_validate(model, X_train, y_train, cv=cv,
                              groups=groups, scoring=scoring)
         model.fit(X_train, y_train)
@@ -247,32 +331,38 @@ def train_classification(X_train, y_train, X_test=None, y_test=None,
 
 
 # ------------------------------------------------------------------ clusters
-def train_clustering(df: pd.DataFrame):
-    """Scale features, pick k by silhouette score, fit K-Means.
+def train_clustering(df: pd.DataFrame, num, cat):
+    """Scale numbers + one-hot categoricals, pick k by silhouette, fit K-Means.
 
     Unsupervised and uses FEATURES only (no productivity columns), so it is
     fitted on all rows. Silhouette is a guide: check the profiles make sense.
     """
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(df[FEATURES])
+    prep = make_prep(num, cat, scale=True)
+    X_t = prep.fit_transform(df[FEATURES])
 
     ks = [k for k in N_CLUSTERS_RANGE if k < len(df)]
     scores = {}
     for k in ks:
         labels = KMeans(n_clusters=k, n_init=10,
-                        random_state=RANDOM_STATE).fit_predict(X_scaled)
+                        random_state=RANDOM_STATE).fit_predict(X_t)
         scores[k] = silhouette_score(
-            X_scaled, labels, sample_size=min(4000, len(df)),
+            X_t, labels, sample_size=min(4000, len(df)),
             random_state=RANDOM_STATE)
     best_k = max(scores, key=scores.get)
 
     kmeans = KMeans(n_clusters=best_k, n_init=10, random_state=RANDOM_STATE)
-    labels = kmeans.fit_predict(X_scaled)
+    labels = kmeans.fit_predict(X_t)
 
-    profiles = df[FEATURES + [REGRESSION_TARGET]].assign(cluster=labels)
-    profiles = profiles.groupby("cluster").mean().round(2)
+    # Profiles: mean of each numeric feature, most common value of each
+    # categorical one, and the average score (for reading, not for fitting).
+    profiles = (df[num + [REGRESSION_TARGET]].assign(cluster=labels)
+                .groupby("cluster").mean().round(2))
+    if cat:
+        modes = (df[cat].assign(cluster=labels).groupby("cluster")
+                 .agg(lambda s: s.mode().iloc[0]))
+        profiles = profiles.join(modes)
     profiles.insert(0, "days", pd.Series(labels).value_counts().sort_index())
-    pipeline = Pipeline([("scale", scaler), ("kmeans", kmeans)])
+    pipeline = Pipeline([("prep", prep), ("kmeans", kmeans)])
     return pipeline, best_k, scores, profiles
 
 
@@ -280,7 +370,9 @@ def train_clustering(df: pd.DataFrame):
 def main() -> None:
     df = load_data()
     n = len(df)
-    print(f"Loaded {n} rows, {len(FEATURES)} features")
+    num, cat = split_feature_types(df)
+    print(f"Loaded {n} rows, {len(FEATURES)} features "
+          f"({len(num)} numeric, {len(cat)} categorical: {cat})")
     if n < SMALL_N:
         print(f"Small-data mode (< {SMALL_N} rows): repeated CV, "
               "no hold-out, no XGBoost.\n")
@@ -306,18 +398,18 @@ def main() -> None:
 
     print("=== Regression: predict productivity_score ===")
     reg, reg_name, reg_results = train_regression(
-        X_train, yr_train, X_test, yr_test, groups)
+        X_train, yr_train, X_test, yr_test, groups, num, cat)
     print(reg_results.to_string(index=False))
     print(f"Best (by CV R2): {reg_name}\n")
 
     print("=== Classification: predict productivity_level ===")
     clf, clf_name, clf_results = train_classification(
-        X_train, yc_train, X_test, yc_test, groups)
+        X_train, yc_train, X_test, yc_test, groups, num, cat)
     print(clf_results.to_string(index=False))
     print(f"Best (by CV macro-F1): {clf_name}\n")
 
     print("=== Clustering: K-Means ===")
-    km, best_k, sil_scores, profiles = train_clustering(df)
+    km, best_k, sil_scores, profiles = train_clustering(df, num, cat)
     for k, s in sil_scores.items():
         print(f"k={k}: silhouette={s:.3f}")
     print(f"Chosen k = {best_k}\n")
@@ -349,10 +441,13 @@ def main() -> None:
     profiles.to_csv(ARTIFACT_DIR / "cluster_profiles.csv")
 
     importance = {}
-    for label, model in (("regressor", reg), ("classifier", clf)):
-        if hasattr(model, "feature_importances_"):
-            importance[label] = dict(zip(
-                FEATURES, np.round(model.feature_importances_, 4).tolist()))
+    imp = feature_importance(reg, cat)
+    if imp:
+        importance["regressor"] = imp
+    imp = feature_importance(clf, cat)
+    if imp:
+        importance["classifier"] = imp
+    coefficients = linear_coefficients(reg)
 
     now = datetime.now(timezone.utc)
     metadata = {
@@ -363,6 +458,9 @@ def main() -> None:
         "experimental": True,
         "disclaimer": DISCLAIMER,
         "features": FEATURES,
+        "numeric_features": num,
+        "categorical_features": cat,
+        "categories": {c: sorted(df[c].astype(str).unique().tolist()) for c in cat},
         "levels": LEVELS,
         "rows_trained_on": int(n),
         "split": split_info,
@@ -383,6 +481,7 @@ def main() -> None:
                    "silhouette_by_k": {str(k): round(float(s), 4)
                                        for k, s in sil_scores.items()}},
         "feature_importance": importance,
+        "regressor_coefficients": coefficients,
         "random_state": RANDOM_STATE,
     }
     with open(ARTIFACT_DIR / "metadata.json", "w") as f:

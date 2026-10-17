@@ -1,27 +1,64 @@
 {
-  "model_version": "20261017-083024",
-  "trained_at_utc": "2026-10-17T08:30:24.363978+00:00",
+  "model_version": "20261017-171213",
+  "trained_at_utc": "2026-10-17T17:12:13.457729+00:00",
   "sklearn_version": "1.9.1",
   "python_version": "3.13.15",
   "experimental": true,
   "disclaimer": "Trained on synthetic (simulated) data. Metrics show how well the models recover the rules written in dummydataset.py, not how well they would predict a real person.",
   "features": [
-    "study_hours",
-    "caffeine_mg",
+    "deep_work",
+    "sleep_hours",
+    "caffeine_level",
     "stress_level",
-    "study_sessions",
-    "journaled"
+    "journaled",
+    "log_streak",
+    "disruptions",
+    "junk_food",
+    "task_difficulty",
+    "deep_work_days_prev7",
+    "day_type",
+    "weather",
+    "free_hours"
   ],
+  "numeric_features": [
+    "deep_work",
+    "sleep_hours",
+    "caffeine_level",
+    "stress_level",
+    "journaled",
+    "log_streak",
+    "disruptions",
+    "junk_food",
+    "task_difficulty",
+    "deep_work_days_prev7",
+    "free_hours"
+  ],
+  "categorical_features": [
+    "day_type",
+    "weather"
+  ],
+  "categories": {
+    "day_type": [
+      "class",
+      "deadline",
+      "free"
+    ],
+    "weather": [
+      "cloudy",
+      "rainy",
+      "sunny"
+    ]
+  },
   "levels": [
     "low",
     "medium",
     "high"
   ],
-  "rows_trained_on": 9740,
+  "rows_trained_on": 1772,
   "split": {
     "method": "hold-out of whole people (GroupShuffleSplit) + GroupKFold CV",
-    "train_rows": 7800,
-    "test_rows": 1940,
+    "train_rows": 1416,
+    "test_rows": 356,
     "train_people": 16,
     "test_people": 4,
     "warning": "The hold-out contains only 4 people, so hold-out metrics are noisy (they change a lot with a different split). Prefer the cross-validated numbers, or generate more people in dummydataset.py."
@@ -32,30 +69,30 @@
     "candidates": [
       {
         "model": "xgboost",
-        "cv_r2": 0.3257,
-        "cv_mae": 8.016,
-        "test_r2": 0.0051,
-        "test_mae": 9.194
-      },
-      {
-        "model": "ridge",
-        "cv_r2": 0.279,
-        "cv_mae": 8.172,
-        "test_r2": 0.0507,
-        "test_mae": 8.948
+        "cv_r2": 0.4243,
+        "cv_mae": 7.383,
+        "test_r2": 0.394,
+        "test_mae": 8.939
       },
       {
         "model": "random_forest",
-        "cv_r2": 0.2723,
-        "cv_mae": 8.323,
-        "test_r2": -0.0464,
-        "test_mae": 9.457
+        "cv_r2": 0.4179,
+        "cv_mae": 7.453,
+        "test_r2": 0.3895,
+        "test_mae": 8.963
+      },
+      {
+        "model": "ridge",
+        "cv_r2": 0.3453,
+        "cv_mae": 7.773,
+        "test_r2": 0.3569,
+        "test_mae": 9.305
       }
     ],
     "holdout": {
-      "r2": 0.0051,
-      "mae": 9.194,
-      "rmse": 11.407
+      "r2": 0.394,
+      "mae": 8.939,
+      "rmse": 10.843
     }
   },
   "classification": {
@@ -64,44 +101,44 @@
     "candidates": [
       {
         "model": "xgboost",
-        "cv_f1_macro": 0.4983,
-        "cv_accuracy": 0.6735,
-        "test_accuracy": 0.6052,
-        "test_f1_macro": 0.419
-      },
-      {
-        "model": "random_forest",
-        "cv_f1_macro": 0.4785,
-        "cv_accuracy": 0.6592,
-        "test_accuracy": 0.6082,
-        "test_f1_macro": 0.407
+        "cv_f1_macro": 0.5712,
+        "cv_accuracy": 0.7187,
+        "test_accuracy": 0.6376,
+        "test_f1_macro": 0.5479
       },
       {
         "model": "logistic_regression",
-        "cv_f1_macro": 0.4746,
-        "cv_accuracy": 0.6691,
-        "test_accuracy": 0.6082,
-        "test_f1_macro": 0.4239
+        "cv_f1_macro": 0.5416,
+        "cv_accuracy": 0.7099,
+        "test_accuracy": 0.632,
+        "test_f1_macro": 0.5507
+      },
+      {
+        "model": "random_forest",
+        "cv_f1_macro": 0.4559,
+        "cv_accuracy": 0.7016,
+        "test_accuracy": 0.5983,
+        "test_f1_macro": 0.4816
       }
     ],
     "holdout": {
-      "accuracy": 0.6052,
-      "f1_macro": 0.419,
+      "accuracy": 0.6376,
+      "f1_macro": 0.5479,
       "confusion_matrix": [
         [
-          1,
-          29,
+          11,
+          15,
           0
         ],
         [
-          13,
-          707,
-          163
+          14,
+          168,
+          4
         ],
         [
           0,
-          561,
-          466
+          96,
+          48
         ]
       ],
       "labels": [
@@ -111,66 +148,83 @@
       ],
       "per_class": {
         "low": {
-          "precision": 0.07142857142857142,
-          "recall": 0.03333333333333333,
-          "f1-score": 0.045454545454545456,
-          "support": 30.0
+          "precision": 0.44,
+          "recall": 0.4230769230769231,
+          "f1-score": 0.43137254901960786,
+          "support": 26.0
         },
         "medium": {
-          "precision": 0.5451040863531226,
-          "recall": 0.8006795016987542,
-          "f1-score": 0.6486238532110091,
-          "support": 883.0
+          "precision": 0.6021505376344086,
+          "recall": 0.9032258064516129,
+          "f1-score": 0.7225806451612903,
+          "support": 186.0
         },
         "high": {
-          "precision": 0.7408585055643879,
-          "recall": 0.4537487828627069,
-          "f1-score": 0.5628019323671497,
-          "support": 1027.0
+          "precision": 0.9230769230769231,
+          "recall": 0.3333333333333333,
+          "f1-score": 0.4897959183673469,
+          "support": 144.0
         },
-        "accuracy": 0.6051546391752577,
+        "accuracy": 0.6376404494382022,
         "macro avg": {
-          "precision": 0.4524637211153606,
-          "recall": 0.4292538726315982,
-          "f1-score": 0.4189601103442347,
-          "support": 1940.0
+          "precision": 0.6550758202371106,
+          "recall": 0.5532120209539564,
+          "f1-score": 0.547916370849415,
+          "support": 356.0
         },
         "weighted avg": {
-          "precision": 0.6414079642305622,
-          "recall": 0.6051546391752577,
-          "f1-score": 0.5938639604587733,
-          "support": 1940.0
+          "precision": 0.7201210025929128,
+          "recall": 0.6376404494382022,
+          "f1-score": 0.6071525239309207,
+          "support": 356.0
         }
       }
     }
   },
   "kmeans": {
-    "k": 3,
-    "silhouette": 0.2373,
+    "k": 2,
+    "silhouette": 0.1001,
     "silhouette_by_k": {
-      "2": 0.2283,
-      "3": 0.2373,
-      "4": 0.2347,
-      "5": 0.2189,
-      "6": 0.2146,
-      "7": 0.2098
+      "2": 0.1001,
+      "3": 0.0937,
+      "4": 0.0891,
+      "5": 0.0848,
+      "6": 0.0883,
+      "7": 0.0863
     }
   },
   "feature_importance": {
     "regressor": {
-      "study_hours": 0.2150000035762787,
-      "caffeine_mg": 0.0568000003695488,
-      "stress_level": 0.4260999858379364,
-      "study_sessions": 0.14839999377727509,
-      "journaled": 0.15379999577999115
+      "stress_level": 0.2599,
+      "journaled": 0.1398,
+      "day_type": 0.0957,
+      "sleep_hours": 0.0896,
+      "weather": 0.089,
+      "log_streak": 0.0607,
+      "deep_work": 0.0544,
+      "disruptions": 0.048,
+      "deep_work_days_prev7": 0.0375,
+      "task_difficulty": 0.037,
+      "junk_food": 0.0344,
+      "caffeine_level": 0.0298,
+      "free_hours": 0.0243
     },
     "classifier": {
-      "study_hours": 0.23430000245571136,
-      "caffeine_mg": 0.08609999716281891,
-      "stress_level": 0.41260001063346863,
-      "study_sessions": 0.13779999315738678,
-      "journaled": 0.1290999948978424
+      "stress_level": 0.1498,
+      "weather": 0.1411,
+      "day_type": 0.1322,
+      "sleep_hours": 0.0945,
+      "journaled": 0.0791,
+      "log_streak": 0.0718,
+      "deep_work": 0.062,
+      "disruptions": 0.0506,
+      "caffeine_level": 0.0495,
+      "free_hours": 0.0446,
+      "task_difficulty": 0.0433,
+      "junk_food": 0.0408,
+      "deep_work_days_prev7": 0.0406
     }
   },
+  "regressor_coefficients": null,
   "random_state": 42
 }

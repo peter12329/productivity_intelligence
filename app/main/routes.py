@@ -3,35 +3,58 @@ from datetime import date, datetime, timedelta
 from flask import (Blueprint, abort, flash, jsonify, redirect,
                    render_template, request, url_for)
 from flask_login import current_user, login_required
+from flask_wtf import FlaskForm
+from wtforms import DateField, FloatField, SelectField, SubmitField
+from wtforms.validators import InputRequired
 
 from app.extensions import db
-from app.habits import BY_KEY, HABITS, goals_met, is_met, level
+from app.habits import BY_KEY, CONTEXT, HABITS, goals_met, is_met, level
 from app.insights.service import latest_estimate
-from app.main.forms import HabitForm
 from app.models import ProductivityLog
 from app.stats import dashboard_stats
 
 main_bp = Blueprint("main", __name__)
 
-# Caffeine is logged as a level 0-10 (stored in the caffeine_mg column).
-# 1 point is about 40 mg, so 10 means "400 mg or more". ml/dummydataset.py uses
-# the same MG_PER_POINT = 40, so a level means the same thing in the app and in training.
-CAFFEINE_LEVELS = [
-    (0, "None"),
-    (1, "about 40 mg"),
-    (2, "about 80 mg"),
-    (3, "about 120 mg"),
-    (4, "about 160 mg"),
-    (5, "about 200 mg"),
-    (6, "about 240 mg"),
-    (7, "about 280 mg"),
-    (8, "about 320 mg"),
-    (9, "about 360 mg"),
-    (10, "400 mg or more"),
-]
-CAFFEINE_LABELS = dict(CAFFEINE_LEVELS)
+# ---------------------------------------------------------------- log forms
+class NumberHabitForm(FlaskForm):
+    """Log page for number habits (sleep, deep work, stress, ...)."""
+    log_date = DateField("Date", default=date.today, validators=[InputRequired()])
+    value = FloatField("Value", validators=[InputRequired()])
+    submit = SubmitField("Save")
 
 
+class ChoiceHabitForm(FlaskForm):
+    """Log page for dropdown habits (caffeine, junk food, day type, ...).
+
+    The allowed choices are set per habit in the route, and WTForms rejects
+    any posted value that is not one of them.
+    """
+    log_date = DateField("Date", default=date.today, validators=[InputRequired()])
+    value = SelectField("Value", choices=[], coerce=str,
+                        validators=[InputRequired()])
+    submit = SubmitField("Save")
+
+
+def _is_choice(habit):
+    return habit.get("type") == "choice" or bool(habit.get("choices"))
+
+
+def _get_log(user_id, log_date, create=False):
+    log = ProductivityLog.query.filter_by(user_id=user_id, log_date=log_date).first()
+    if log is None and create:
+        log = ProductivityLog(user_id=user_id, log_date=log_date)
+        db.session.add(log)
+    return log
+
+
+def _choice_label(habit, value):
+    for v, label in habit.get("choices", []):
+        if str(v) == str(value):
+            return label
+    return None
+
+
+# ---------------------------------------------------------------- dashboard
 def build_dashboard(user):
     today = date.today()
 
@@ -72,6 +95,7 @@ def build_dashboard(user):
     # This week, Monday to Sunday
     monday = today - timedelta(days=today.weekday())
     week_dates = [monday + timedelta(days=i) for i in range(7)]
+    today_log = by_date.get(today)
 
     habits = []
     for h in HABITS:
@@ -85,11 +109,19 @@ def build_dashboard(user):
             "key": h["key"], "name": h["name"], "color": h["color"],
             "type": h.get("type", "number"),
             "days": days, "done": sum(1 for x in days if x),
-            # today's raw logged value (None if nothing logged yet), used to
-            # pre-select the caffeine dropdown
-            "value": (getattr(by_date[today], h["field"], None)
-                      if today in by_date else None),
+            "value": getattr(today_log, h["field"], None) if today_log else None,
         })
+
+    # Context inputs (no goal): today's value or None
+    context = []
+    for c in CONTEXT:
+        raw = getattr(today_log, c["field"], None) if today_log else None
+        shown = None
+        if raw is not None:
+            shown = _choice_label(c, raw) or str(raw)
+        context.append({"key": c["key"], "name": c["name"],
+                        "color": c.get("color", "#6c757d"),
+                        "value": raw, "shown": shown})
 
     elapsed = today.weekday() + 1
     percent = round(sum(h["done"] for h in habits) / (len(HABITS) * elapsed) * 100)
@@ -103,11 +135,11 @@ def build_dashboard(user):
         "weeks": weeks,
         "month_labels": labels,
         "habits": habits,
+        "context": context,
         "percent": percent,
         "today_index": today.weekday(),
-        "today_logged": today in by_date and level(by_date[today]) > 0,
+        "today_logged": today_log is not None and level(today_log) > 0,
         "total_logs": sum(1 for l in logs if level(l) > 0),
-        "caffeine_levels": CAFFEINE_LEVELS,
     }
 
 
@@ -132,6 +164,7 @@ def api_dashboard():
     return jsonify(dashboard_stats(current_user))
 
 
+# ---------------------------------------------------------------- log a habit
 @main_bp.route("/habit/<key>", methods=["GET", "POST"])
 @login_required
 def log_habit(key):
@@ -139,69 +172,51 @@ def log_habit(key):
     if habit is None or habit.get("type") == "check":
         abort(404)
 
-    form = HabitForm()
+    choice = _is_choice(habit)
+    form = ChoiceHabitForm() if choice else NumberHabitForm()
+    if choice:
+        form.value.choices = [(str(v), label) for v, label in habit["choices"]]
+
     if request.method == "GET":
-        existing = ProductivityLog.query.filter_by(
-            user_id=current_user.id, log_date=date.today()
-        ).first()
-        if existing is not None and getattr(existing, habit["field"]) is not None:
-            form.value.data = getattr(existing, habit["field"])
+        existing = _get_log(current_user.id, date.today())
+        current = getattr(existing, habit["field"], None) if existing else None
+        if current is not None:
+            form.value.data = str(current) if choice else current
 
     if form.validate_on_submit():
+        lo, hi = habit.get("min"), habit.get("max")
         if form.log_date.data > date.today():
             form.log_date.errors.append("Date can't be in the future.")
-        elif not habit["min"] <= form.value.data <= habit["max"]:
-            form.value.errors.append(f"Enter a value from {habit['min']} to {habit['max']}.")
+        elif not choice and lo is not None and hi is not None \
+                and not lo <= form.value.data <= hi:
+            form.value.errors.append(f"Enter a value from {lo} to {hi}.")
         else:
-            log = ProductivityLog.query.filter_by(
-                user_id=current_user.id, log_date=form.log_date.data
-            ).first()
-            if log is None:
-                log = ProductivityLog(user_id=current_user.id, log_date=form.log_date.data)
-                db.session.add(log)
-            setattr(log, habit["field"], habit["cast"](form.value.data))
-            db.session.commit()
+            try:
+                stored = habit["cast"](form.value.data)
+            except (TypeError, ValueError):
+                form.value.errors.append("That value isn't valid.")
+                stored = None
+            if stored is not None:
+                log = _get_log(current_user.id, form.log_date.data, create=True)
+                setattr(log, habit["field"], stored)
+                db.session.commit()
 
-            met = is_met(habit, log)
-            flash(f"{habit['name']}: {'goal met' if met else 'goal not met'} "
-                  f"({form.value.data:g} {habit['unit']}).",
-                  "success" if met else "info")
-            return redirect(url_for("main.index"))
+                if choice:
+                    shown = _choice_label(habit, form.value.data) or form.value.data
+                else:
+                    unit = habit.get("unit", "")
+                    shown = f"{form.value.data:g} {unit}".strip()
+
+                if "met" in habit:                        # goal habits
+                    met = is_met(habit, log)
+                    flash(f"{habit['name']}: "
+                          f"{'goal met' if met else 'goal not met'} ({shown}).",
+                          "success" if met else "info")
+                else:                                     # context inputs
+                    flash(f"{habit['name']} saved: {shown}.", "success")
+                return redirect(url_for("main.index"))
 
     return render_template("habit_form.html", form=form, habit=habit)
-
-
-@main_bp.route("/habit/caffeine/level", methods=["POST"])
-@login_required
-def log_caffeine():
-    """Save today's caffeine level chosen from the dropdown on the home page."""
-    habit = BY_KEY.get("caffeine")
-    if habit is None:
-        abort(404)
-
-    try:
-        chosen = int(request.form.get("level", ""))
-    except ValueError:
-        flash("Choose a caffeine level from the list.", "danger")
-        return redirect(url_for("main.index"))
-    if chosen not in CAFFEINE_LABELS:                 # only 0-10 is accepted
-        flash("Choose a caffeine level from the list.", "danger")
-        return redirect(url_for("main.index"))
-
-    log = ProductivityLog.query.filter_by(
-        user_id=current_user.id, log_date=date.today()
-    ).first()
-    if log is None:
-        log = ProductivityLog(user_id=current_user.id, log_date=date.today())
-        db.session.add(log)
-    setattr(log, habit["field"], habit["cast"](chosen))
-    db.session.commit()
-
-    met = is_met(habit, log)
-    flash(f"{habit['name']}: {'goal met' if met else 'goal not met'} "
-          f"(level {chosen}, {CAFFEINE_LABELS[chosen]}).",
-          "success" if met else "info")
-    return redirect(url_for("main.index"))
 
 
 @main_bp.route("/habit/<key>/toggle", methods=["POST"])
@@ -211,17 +226,12 @@ def toggle_habit(key):
     if habit is None or habit.get("type") != "check":
         abort(404)
 
-    log = ProductivityLog.query.filter_by(
-        user_id=current_user.id, log_date=date.today()
-    ).first()
-    if log is None:
-        log = ProductivityLog(user_id=current_user.id, log_date=date.today())
-        db.session.add(log)
-
+    log = _get_log(current_user.id, date.today(), create=True)
     current = getattr(log, habit["field"])
     setattr(log, habit["field"], None if current else True)
     db.session.commit()
     return redirect(url_for("main.index"))
+
 
 @main_bp.route("/profile")
 @login_required

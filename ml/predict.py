@@ -3,7 +3,12 @@
 Flask-free on purpose. From the web app:
 
     from ml.predict import predict_day
-    result = predict_day({"sleep_hours": 7, ...})
+    result = predict_day({"deep_work": 4, "sleep_hours": 7, ..., "day_type": "class"})
+
+predict_day needs ALL of settings.FEATURES. Numbers are range-checked; text
+features (day_type, weather) must be one of the values seen in training.
+The app-side code that turns a database row into these inputs lives in
+app/insights/service.py.
 
 Quick test from the project root:
     python -m ml.predict
@@ -11,11 +16,16 @@ Quick test from the project root:
 SECURITY: the .joblib files are pickles. Only load files this project trained.
 """
 import json
+import math
 
 import joblib
 import pandas as pd
 
-from ml.settings import ARTIFACT_DIR, FEATURE_RANGES, FEATURES, LEVELS
+import ml.settings as settings
+from ml.settings import ARTIFACT_DIR, FEATURES, LEVELS
+
+# Optional: numeric ranges. Features without an entry are not range-checked.
+FEATURE_RANGES = getattr(settings, "FEATURE_RANGES", {})
 
 DISCLAIMER = (
     "Experimental: trained on synthetic (simulated) data. This is an estimate "
@@ -54,20 +64,44 @@ def reload_models() -> None:
     _cache.clear()
 
 
-def _validate(values: dict) -> pd.DataFrame:
+def _validate(values: dict, meta: dict) -> pd.DataFrame:
+    """Check one day's inputs and return a one-row DataFrame in FEATURES order."""
     missing = [f for f in FEATURES if f not in values]
     if missing:
         raise ValueError(f"Missing inputs: {missing}")
+
+    # The models were trained on these exact columns. If settings.FEATURES
+    # changed after training, stop instead of predicting from the wrong inputs.
+    trained = meta.get("features")
+    if trained is not None and list(trained) != list(FEATURES):
+        raise ValueError(
+            "settings.FEATURES differs from the trained models. "
+            "Retrain: python -m ml.train")
+
+    categories = meta.get("categories", {})
+    cat = set(meta.get("categorical_features", []))
     row = {}
     for name in FEATURES:
+        raw = values[name]
+        if name in cat:
+            text = "" if raw is None else str(raw)
+            allowed = categories.get(name)
+            if allowed and text not in allowed:
+                raise ValueError(
+                    f"'{name}' must be one of: {', '.join(allowed)}")
+            row[name] = text
+            continue
         try:
-            value = float(values[name])
+            value = float(raw)
         except (TypeError, ValueError):
             raise ValueError(f"'{name}' must be a number")
-        low, high = FEATURE_RANGES[name]
-        # NaN fails this comparison too, so it is rejected as well
-        if not low <= value <= high:
-            raise ValueError(f"'{name}' must be between {low} and {high}")
+        if math.isnan(value):
+            raise ValueError(f"'{name}' must be a number")
+        bounds = FEATURE_RANGES.get(name)
+        if bounds is not None:
+            low, high = bounds
+            if not low <= value <= high:
+                raise ValueError(f"'{name}' must be between {low} and {high}")
         row[name] = value
     return pd.DataFrame([row], columns=FEATURES)  # fixed column order
 
@@ -75,7 +109,8 @@ def _validate(values: dict) -> pd.DataFrame:
 def predict_day(values: dict) -> dict:
     """Predict score, level and behaviour cluster for one day."""
     models = _load()
-    X = _validate(values)
+    meta = models["metadata"]
+    X = _validate(values, meta)
 
     score = float(models["regressor"].predict(X)[0])
     score = round(min(max(score, 0.0), 100.0), 1)
@@ -85,7 +120,6 @@ def predict_day(values: dict) -> dict:
     probs = clf.predict_proba(X)[0]
     cluster = int(models["kmeans"].predict(X)[0])
 
-    meta = models["metadata"]
     reg_meta = meta.get("regression") or {}
     # Typical error = cross-validated MAE of the selected model (steadier than
     # a hold-out made of only a few people).
@@ -108,10 +142,11 @@ def predict_day(values: dict) -> dict:
 
 
 def predict_for_log(log) -> dict:
-    """Predict from a ProductivityLog row (or any object with those attributes).
+    """Predict from any object whose attributes are named like FEATURES.
 
-    NOTE: the model expects caffeine on the 0-10 scale. If your database stores
-    real milligrams, convert here (mg / 60) before calling predict_day.
+    This does NOT work on a raw ProductivityLog (its column names differ and
+    two features are computed from past days). For the app use
+    app.insights.service.latest_estimate instead.
     """
     values = {name: getattr(log, name, None) for name in FEATURES}
     missing = [name for name, v in values.items() if v is None]
@@ -140,6 +175,11 @@ def model_info() -> dict:
 
 
 if __name__ == "__main__":
-    example = {"study_hours": 4, "caffeine_mg": 3, "stress_level": 4,
-               "study_sessions": 3, "journaled": 1}
+    example = {
+        "deep_work": 4, "sleep_hours": 7.5, "caffeine_level": 3,
+        "stress_level": 4, "journaled": 1, "log_streak": 3,
+        "disruptions": 1, "junk_food": 0, "task_difficulty": 3,
+        "deep_work_days_prev7": 4, "day_type": "class", "weather": "sunny",
+        "free_hours": 6,
+    }
     print(json.dumps(predict_day(example), indent=2))
