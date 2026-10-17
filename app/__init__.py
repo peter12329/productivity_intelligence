@@ -24,7 +24,6 @@ def create_app(config_class=Config):
     from app.insights.routes import insights
     app.register_blueprint(insights)
 
-
     with app.app_context():
         db.create_all()
 

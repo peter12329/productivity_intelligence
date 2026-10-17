@@ -1,0 +1,176 @@
+{
+  "model_version": "20261017-083024",
+  "trained_at_utc": "2026-10-17T08:30:24.363978+00:00",
+  "sklearn_version": "1.9.1",
+  "python_version": "3.13.15",
+  "experimental": true,
+  "disclaimer": "Trained on synthetic (simulated) data. Metrics show how well the models recover the rules written in dummydataset.py, not how well they would predict a real person.",
+  "features": [
+    "study_hours",
+    "caffeine_mg",
+    "stress_level",
+    "study_sessions",
+    "journaled"
+  ],
+  "levels": [
+    "low",
+    "medium",
+    "high"
+  ],
+  "rows_trained_on": 9740,
+  "split": {
+    "method": "hold-out of whole people (GroupShuffleSplit) + GroupKFold CV",
+    "train_rows": 7800,
+    "test_rows": 1940,
+    "train_people": 16,
+    "test_people": 4,
+    "warning": "The hold-out contains only 4 people, so hold-out metrics are noisy (they change a lot with a different split). Prefer the cross-validated numbers, or generate more people in dummydataset.py."
+  },
+  "regression": {
+    "selected": "xgboost",
+    "selection_rule": "highest cross-validated R2 on the training part",
+    "candidates": [
+      {
+        "model": "xgboost",
+        "cv_r2": 0.3257,
+        "cv_mae": 8.016,
+        "test_r2": 0.0051,
+        "test_mae": 9.194
+      },
+      {
+        "model": "ridge",
+        "cv_r2": 0.279,
+        "cv_mae": 8.172,
+        "test_r2": 0.0507,
+        "test_mae": 8.948
+      },
+      {
+        "model": "random_forest",
+        "cv_r2": 0.2723,
+        "cv_mae": 8.323,
+        "test_r2": -0.0464,
+        "test_mae": 9.457
+      }
+    ],
+    "holdout": {
+      "r2": 0.0051,
+      "mae": 9.194,
+      "rmse": 11.407
+    }
+  },
+  "classification": {
+    "selected": "xgboost",
+    "selection_rule": "highest cross-validated macro-F1 on the training part",
+    "candidates": [
+      {
+        "model": "xgboost",
+        "cv_f1_macro": 0.4983,
+        "cv_accuracy": 0.6735,
+        "test_accuracy": 0.6052,
+        "test_f1_macro": 0.419
+      },
+      {
+        "model": "random_forest",
+        "cv_f1_macro": 0.4785,
+        "cv_accuracy": 0.6592,
+        "test_accuracy": 0.6082,
+        "test_f1_macro": 0.407
+      },
+      {
+        "model": "logistic_regression",
+        "cv_f1_macro": 0.4746,
+        "cv_accuracy": 0.6691,
+        "test_accuracy": 0.6082,
+        "test_f1_macro": 0.4239
+      }
+    ],
+    "holdout": {
+      "accuracy": 0.6052,
+      "f1_macro": 0.419,
+      "confusion_matrix": [
+        [
+          1,
+          29,
+          0
+        ],
+        [
+          13,
+          707,
+          163
+        ],
+        [
+          0,
+          561,
+          466
+        ]
+      ],
+      "labels": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "per_class": {
+        "low": {
+          "precision": 0.07142857142857142,
+          "recall": 0.03333333333333333,
+          "f1-score": 0.045454545454545456,
+          "support": 30.0
+        },
+        "medium": {
+          "precision": 0.5451040863531226,
+          "recall": 0.8006795016987542,
+          "f1-score": 0.6486238532110091,
+          "support": 883.0
+        },
+        "high": {
+          "precision": 0.7408585055643879,
+          "recall": 0.4537487828627069,
+          "f1-score": 0.5628019323671497,
+          "support": 1027.0
+        },
+        "accuracy": 0.6051546391752577,
+        "macro avg": {
+          "precision": 0.4524637211153606,
+          "recall": 0.4292538726315982,
+          "f1-score": 0.4189601103442347,
+          "support": 1940.0
+        },
+        "weighted avg": {
+          "precision": 0.6414079642305622,
+          "recall": 0.6051546391752577,
+          "f1-score": 0.5938639604587733,
+          "support": 1940.0
+        }
+      }
+    }
+  },
+  "kmeans": {
+    "k": 3,
+    "silhouette": 0.2373,
+    "silhouette_by_k": {
+      "2": 0.2283,
+      "3": 0.2373,
+      "4": 0.2347,
+      "5": 0.2189,
+      "6": 0.2146,
+      "7": 0.2098
+    }
+  },
+  "feature_importance": {
+    "regressor": {
+      "study_hours": 0.2150000035762787,
+      "caffeine_mg": 0.0568000003695488,
+      "stress_level": 0.4260999858379364,
+      "study_sessions": 0.14839999377727509,
+      "journaled": 0.15379999577999115
+    },
+    "classifier": {
+      "study_hours": 0.23430000245571136,
+      "caffeine_mg": 0.08609999716281891,
+      "stress_level": 0.41260001063346863,
+      "study_sessions": 0.13779999315738678,
+      "journaled": 0.1290999948978424
+    }
+  },
+  "random_state": 42
+}

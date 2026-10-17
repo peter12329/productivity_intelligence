@@ -4,6 +4,8 @@ from flask import (Blueprint, abort, flash, jsonify, redirect,
                    render_template, request, url_for)
 from flask_login import current_user, login_required
 
+from app.insights.service import latest_estimate
+
 from app.extensions import db
 from app.habits import BY_KEY, HABITS, goals_met, is_met, level
 from app.main.forms import HabitForm
@@ -89,9 +91,11 @@ def build_dashboard(user):
 
 @main_bp.route("/")
 def index():
-    data = build_dashboard(current_user) if current_user.is_authenticated else None
+    data = None
+    if current_user.is_authenticated:
+        data = build_dashboard(current_user)
+        data["estimate"] = latest_estimate(current_user.id)
     return render_template("index.html", data=data)
-
 
 @main_bp.route("/dashboard")
 @login_required

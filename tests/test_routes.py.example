@@ -1,0 +1,66 @@
+import pytest
+from app import create_app, db
+from app.models import User, ProductivityLog
+
+@pytest.fixture
+def client():
+    app = create_app()
+    with app.app_context():
+        db.create_all()
+        db.session.add_all([User(id=1), User(id=2)])
+        db.session.add(ProductivityLog(id=1, user_id=1, log_date="2026-10-01", study_hours=4, caffeine_mg=3, stress_level=4, study_sessions=3, journaled=True))
+        db.session.add(ProductivityLog(id=2, user_id=2, log_date="2026-10-01", study_hours=2, caffeine_mg=1, stress_level=8, study_sessions=1, journaled=False))
+        db.session.add(ProductivityLog(id=3, user_id=1, log_date="2026-10-02", study_hours=2, caffeine_mg=None, stress_level=8, study_sessions=1, journaled=False))
+        db.session.commit()
+        c = app.test_client()
+        with c.session_transaction() as s:
+            s["_user_id"] = "1"; s["_fresh"] = True
+        yield c
+
+GOOD = {"study_hours": "4", "caffeine_mg": "3", "stress_level": "4", "study_sessions": "3", "journaled": "1"}
+
+def test_get_form(client):
+    r = client.get("/insights/")
+    assert r.status_code == 200 and b"Experimental" in r.data and b"synthetic" in r.data
+
+def test_post_valid(client):
+    r = client.post("/insights/", data=GOOD)
+    assert r.status_code == 200 and b"Estimated score" in r.data and b"high" in r.data or b"medium" in r.data
+    assert b"Experimental: trained on synthetic" in r.data
+
+def test_post_out_of_range(client):
+    r = client.post("/insights/", data={**GOOD, "caffeine_mg": "99"})
+    assert r.status_code == 200 and b"must be between" in r.data and b"Estimated score" not in r.data
+
+def test_post_garbage(client):
+    r = client.post("/insights/", data={**GOOD, "study_hours": "abc"})
+    assert b"must be a number" in r.data and b"Estimated score" not in r.data
+
+def test_post_empty_checkbox_is_zero(client):
+    d = dict(GOOD); d.pop("journaled")
+    assert b"Estimated score" in client.post("/insights/", data=d).data
+
+def test_estimate_own_log(client):
+    r = client.get("/insights/log/1")
+    assert r.status_code == 200 and b"Estimated score" in r.data
+
+def test_estimate_other_users_log_is_404(client):
+    assert client.get("/insights/log/2").status_code == 404
+
+def test_log_with_missing_value_warns(client):
+    r = client.get("/insights/log/3")
+    assert r.status_code == 200 and b"missing" in r.data and b"Estimated score" not in r.data
+
+def test_requires_login():
+    app = create_app()
+    with app.app_context():
+        db.create_all()
+        r = app.test_client().get("/insights/")
+        assert r.status_code in (302, 401)
+
+def test_models_not_trained(client, tmp_path, monkeypatch):
+    import ml.predict as p
+    p._cache.clear(); monkeypatch.setattr(p, "ARTIFACT_DIR", tmp_path)
+    r = client.get("/insights/")
+    assert r.status_code == 503 and b"not set up yet" in r.data
+    p._cache.clear()

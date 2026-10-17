@@ -10,6 +10,10 @@
       {% else %}{{ data.total_logs }} day{{ "s" if data.total_logs != 1 }} logged in the last year.{% endif %}
     </p>
 
+    {% if data.estimate %}
+    <button type="button" id="score-jump" class="btn btn-outline-primary btn-sm mb-3">Jump to estimated score &darr;</button>
+    {% endif %}
+
     <div class="d-flex justify-content-between small text-muted mb-1">
       <span>This week</span><span>{{ data.percent }}% of goals achieved</span>
     </div>
@@ -73,6 +77,7 @@
 
   <div class="col-lg-4">
     <h2 class="h5 mb-3">{{ data.today_label }}</h2>
+
     {% if not data.today_logged %}
     <div class="alert alert-warning py-2 small">No data for today yet.</div>
     {% endif %}
@@ -99,6 +104,33 @@
         </div>
       {% endfor %}
     </div>
+
+    <!-- ML estimate (experimental): data.estimate is set by the main route; hidden if absent -->
+    {% if data.estimate %}
+    <div class="card mt-3 mb-3" id="estimate-card">
+      <div class="card-body py-3">
+        <div class="d-flex justify-content-between align-items-center">
+          <h3 class="h6 mb-0">Estimated score</h3>
+          <span class="badge bg-warning text-dark">Experimental</span>
+        </div>
+        {% if data.estimate.status == "ok" %}
+          <div class="display-6 fw-semibold mt-2">{{ data.estimate.score }}<span class="fs-6 text-muted"> / 100</span></div>
+          <p class="small mb-1">
+            Level: <strong>{{ data.estimate.level }}</strong>
+            {% if data.estimate.error %}<span class="text-muted">&middot; typically &plusmn;{{ data.estimate.error }} points</span>{% endif %}
+          </p>
+          <p class="small text-muted mb-1">Based on {% if data.estimate.log_date %}your log from {{ data.estimate.log_date }}{% else %}your latest log{% endif %}, using a model trained on synthetic data. Not a forecast for tomorrow.</p>
+          <a class="small" href="{{ url_for('insights.estimate_log', log_id=data.estimate.log_id) }}">Details</a>
+          <span class="small text-muted">&middot;</span>
+          <a class="small" href="{{ url_for('insights.index') }}">Try your own numbers</a>
+        {% elif data.estimate.status == "no_log" %}
+          <p class="small text-muted mt-2 mb-0">Log a day to see an estimate.</p>
+        {% else %}
+          <p class="small text-muted mt-2 mb-0">Can't estimate yet. {{ data.estimate.message }}</p>
+        {% endif %}
+      </div>
+    </div>
+    {% endif %}
   </div>
 </div>
 
@@ -126,6 +158,24 @@
 
     scrollToLatest();
     window.addEventListener("load", scrollToLatest);
+  })();
+</script>
+
+<style>
+  #estimate-card { scroll-margin-top: 1rem; transition: box-shadow .3s; }
+  #estimate-card.flash { box-shadow: 0 0 0 .25rem rgba(13, 110, 253, .35); }
+</style>
+
+<script>
+  (function () {
+    var btn = document.getElementById("score-jump");
+    var card = document.getElementById("estimate-card");
+    if (!btn || !card) return;
+    btn.addEventListener("click", function () {
+      card.scrollIntoView({ behavior: "smooth", block: "center" });
+      card.classList.add("flash");
+      setTimeout(function () { card.classList.remove("flash"); }, 1400);
+    });
   })();
 </script>
 

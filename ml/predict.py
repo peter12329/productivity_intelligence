@@ -1,12 +1,14 @@
 """Load the saved models and make predictions.
 
-Flask-free on purpose. From the web app, later:
+Flask-free on purpose. From the web app:
 
     from ml.predict import predict_day
     result = predict_day({"sleep_hours": 7, ...})
 
 Quick test from the project root:
     python -m ml.predict
+
+SECURITY: the .joblib files are pickles. Only load files this project trained.
 """
 import json
 
@@ -14,6 +16,12 @@ import joblib
 import pandas as pd
 
 from ml.settings import ARTIFACT_DIR, FEATURE_RANGES, FEATURES, LEVELS
+
+DISCLAIMER = (
+    "Experimental: trained on synthetic (simulated) data. This is an estimate "
+    "for the day described by these inputs, not a forecast for tomorrow and "
+    "not a statement about you."
+)
 
 _cache = {}
 
@@ -41,6 +49,11 @@ def _load():
     return _cache
 
 
+def reload_models() -> None:
+    """Forget cached models (call after retraining without restarting Flask)."""
+    _cache.clear()
+
+
 def _validate(values: dict) -> pd.DataFrame:
     missing = [f for f in FEATURES if f not in values]
     if missing:
@@ -52,6 +65,7 @@ def _validate(values: dict) -> pd.DataFrame:
         except (TypeError, ValueError):
             raise ValueError(f"'{name}' must be a number")
         low, high = FEATURE_RANGES[name]
+        # NaN fails this comparison too, so it is rejected as well
         if not low <= value <= high:
             raise ValueError(f"'{name}' must be between {low} and {high}")
         row[name] = value
@@ -71,6 +85,12 @@ def predict_day(values: dict) -> dict:
     probs = clf.predict_proba(X)[0]
     cluster = int(models["kmeans"].predict(X)[0])
 
+    meta = models["metadata"]
+    reg_meta = meta.get("regression") or {}
+    # Typical error = cross-validated MAE of the selected model (steadier than
+    # a hold-out made of only a few people).
+    cv_mae = next((c["cv_mae"] for c in reg_meta.get("candidates", [])
+                   if c["model"] == reg_meta.get("selected")), None)
     return {
         "predicted_score": score,
         "predicted_level": LEVELS[class_id],
@@ -80,11 +100,19 @@ def predict_day(values: dict) -> dict:
         },
         "cluster": cluster,
         "cluster_profile": models["profiles"].loc[cluster].to_dict(),
+        "typical_error_points": cv_mae,
+        "model_version": meta.get("model_version"),
+        "experimental": True,
+        "disclaimer": DISCLAIMER,
     }
 
 
 def predict_for_log(log) -> dict:
-    """Predict from a ProductivityLog row (or any object with those attributes)."""
+    """Predict from a ProductivityLog row (or any object with those attributes).
+
+    NOTE: the model expects caffeine on the 0-10 scale. If your database stores
+    real milligrams, convert here (mg / 60) before calling predict_day.
+    """
     values = {name: getattr(log, name, None) for name in FEATURES}
     missing = [name for name, v in values.items() if v is None]
     if missing:
@@ -95,16 +123,19 @@ def predict_for_log(log) -> dict:
 
 
 def data_stage(n_logs: int) -> str:
-    """How much of the user's own data exists decides what the app can claim."""
+    """How much of the user's own data exists decides what the app may claim.
+
+    No stage means "a model trained on you": there is no per-user model.
+    """
     if n_logs < 7:
-        return "general"       # estimate from the synthetic-trained model
+        return "general"            # only the synthetic-trained estimate
     if n_logs < 20:
-        return "descriptive"   # show averages, no personal model yet
-    return "personal"          # enough rows to consider a per-user model
+        return "descriptive"        # also show the user's own averages
+    return "enough_for_trends"      # enough rows to show trends from their logs
 
 
 def model_info() -> dict:
-    """Metrics and feature importance, for an ML Insights page."""
+    """Metrics, split and feature importance, for an ML Insights page."""
     return _load()["metadata"]
 
 
