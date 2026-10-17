@@ -4,15 +4,32 @@ from flask import (Blueprint, abort, flash, jsonify, redirect,
                    render_template, request, url_for)
 from flask_login import current_user, login_required
 
-from app.insights.service import latest_estimate
-
 from app.extensions import db
 from app.habits import BY_KEY, HABITS, goals_met, is_met, level
+from app.insights.service import latest_estimate
 from app.main.forms import HabitForm
 from app.models import ProductivityLog
 from app.stats import dashboard_stats
 
 main_bp = Blueprint("main", __name__)
+
+# Caffeine is logged as a level 0-10 (stored in the caffeine_mg column).
+# 1 point is about 40 mg, so 10 means "400 mg or more". ml/dummydataset.py uses
+# the same MG_PER_POINT = 40, so a level means the same thing in the app and in training.
+CAFFEINE_LEVELS = [
+    (0, "None"),
+    (1, "about 40 mg"),
+    (2, "about 80 mg"),
+    (3, "about 120 mg"),
+    (4, "about 160 mg"),
+    (5, "about 200 mg"),
+    (6, "about 240 mg"),
+    (7, "about 280 mg"),
+    (8, "about 320 mg"),
+    (9, "about 360 mg"),
+    (10, "400 mg or more"),
+]
+CAFFEINE_LABELS = dict(CAFFEINE_LEVELS)
 
 
 def build_dashboard(user):
@@ -68,6 +85,10 @@ def build_dashboard(user):
             "key": h["key"], "name": h["name"], "color": h["color"],
             "type": h.get("type", "number"),
             "days": days, "done": sum(1 for x in days if x),
+            # today's raw logged value (None if nothing logged yet), used to
+            # pre-select the caffeine dropdown
+            "value": (getattr(by_date[today], h["field"], None)
+                      if today in by_date else None),
         })
 
     elapsed = today.weekday() + 1
@@ -86,6 +107,7 @@ def build_dashboard(user):
         "today_index": today.weekday(),
         "today_logged": today in by_date and level(by_date[today]) > 0,
         "total_logs": sum(1 for l in logs if level(l) > 0),
+        "caffeine_levels": CAFFEINE_LEVELS,
     }
 
 
@@ -96,6 +118,7 @@ def index():
         data = build_dashboard(current_user)
         data["estimate"] = latest_estimate(current_user.id)
     return render_template("index.html", data=data)
+
 
 @main_bp.route("/dashboard")
 @login_required
@@ -146,6 +169,39 @@ def log_habit(key):
             return redirect(url_for("main.index"))
 
     return render_template("habit_form.html", form=form, habit=habit)
+
+
+@main_bp.route("/habit/caffeine/level", methods=["POST"])
+@login_required
+def log_caffeine():
+    """Save today's caffeine level chosen from the dropdown on the home page."""
+    habit = BY_KEY.get("caffeine")
+    if habit is None:
+        abort(404)
+
+    try:
+        chosen = int(request.form.get("level", ""))
+    except ValueError:
+        flash("Choose a caffeine level from the list.", "danger")
+        return redirect(url_for("main.index"))
+    if chosen not in CAFFEINE_LABELS:                 # only 0-10 is accepted
+        flash("Choose a caffeine level from the list.", "danger")
+        return redirect(url_for("main.index"))
+
+    log = ProductivityLog.query.filter_by(
+        user_id=current_user.id, log_date=date.today()
+    ).first()
+    if log is None:
+        log = ProductivityLog(user_id=current_user.id, log_date=date.today())
+        db.session.add(log)
+    setattr(log, habit["field"], habit["cast"](chosen))
+    db.session.commit()
+
+    met = is_met(habit, log)
+    flash(f"{habit['name']}: {'goal met' if met else 'goal not met'} "
+          f"(level {chosen}, {CAFFEINE_LABELS[chosen]}).",
+          "success" if met else "info")
+    return redirect(url_for("main.index"))
 
 
 @main_bp.route("/habit/<key>/toggle", methods=["POST"])
