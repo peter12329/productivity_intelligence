@@ -104,24 +104,23 @@
         {% endif %}
       </div>
     {% endfor %}
-  </div>
 
-    <!-- Today's context: inputs with no goal that the estimate still needs -->
     {% if data.context %}
-    <div class="today-panel mt-3">
-      <h3 class="h6 mb-2">Today's context</h3>
-      {% for c in data.context %}
-      <div class="today-item" style="border-left-color: {{ c.color }}">
+    <div class="small text-muted text-uppercase mt-3 mb-2" style="letter-spacing: .05em;">Context</div>
+    {% set palette = ["#0dcaf0", "#fd7e14", "#20c997", "#6f42c1"] %}
+    {% for c in data.context %}
+      {% set color = palette[loop.index0 % 4] %}
+      <div class="today-item" style="border-left-color: {{ color }}">
         <div class="d-flex justify-content-between align-items-center">
           <strong>{{ c.name }}</strong>
-          {% if c.shown %}<span class="small text-muted">{{ c.shown }}</span>
-          {% else %}<span class="badge bg-light text-muted border">Not set</span>{% endif %}
+          {% if c.shown %}<span class="badge" style="background: {{ color }}">{{ c.shown }}</span>
+          {% else %}<span class="badge bg-light text-muted border">No data</span>{% endif %}
         </div>
         <a class="btn btn-outline-primary btn-sm w-100 mt-2" href="{{ url_for('main.log_habit', key=c.key) }}">{{ "Edit" if c.shown else "Log" }}</a>
       </div>
-      {% endfor %}
-    </div>
+    {% endfor %}
     {% endif %}
+  </div>
 
     <!-- ML estimate (experimental): data.estimate is set by the main route; hidden if absent -->
     {% if data.estimate %}
@@ -132,13 +131,60 @@
           <span class="badge bg-warning text-dark">Experimental</span>
         </div>
         {% if data.estimate.status == "ok" %}
-          <div class="display-6 fw-semibold mt-2">{{ data.estimate.score }}<span class="fs-6 text-muted"> / 100</span></div>
-          <p class="small mb-1">
-            Level: <strong>{{ data.estimate.level }}</strong>
-            {% if data.estimate.error %}<span class="text-muted">&middot; typically &plusmn;{{ data.estimate.error }} points</span>{% endif %}
-          </p>
-          <p class="small text-muted mb-1">Based on {% if data.estimate.log_date %}your log from {{ data.estimate.log_date }}{% else %}your latest log{% endif %}, using a model trained on synthetic data. Not a forecast for tomorrow.</p>
-          <a class="small" href="{{ url_for('insights.estimate_log', log_id=data.estimate.log_id) }}">Details</a>
+          {% set e = data.estimate %}
+          {% set colors = {"low": "#e5484d", "medium": "#f5a623", "high": "#30a46c"} %}
+          <div class="d-flex align-items-baseline gap-2 mt-2">
+            <span class="display-6 fw-semibold">{{ e.score }}</span><span class="text-muted">/ 100</span>
+            <span class="badge ms-auto" style="background: {{ colors[e.level] }}">{{ e.level|capitalize }}</span>
+          </div>
+
+          <!-- gauge: Low / Medium / High zones, the score marker, and the typical-error stripe -->
+          <div class="est-gauge" style="background: linear-gradient(to right,
+               {{ colors.low }} 0 {{ e.low_below }}%, {{ colors.medium }} {{ e.low_below }}% {{ e.high_from }}%,
+               {{ colors.high }} {{ e.high_from }}% 100%);"
+               title="Low below {{ e.low_below }}, medium up to {{ e.high_from }}, high above">
+            {% if e.range_lo is not none %}<div class="est-range" style="left: {{ e.range_lo }}%; width: {{ e.range_hi - e.range_lo }}%;"></div>{% endif %}
+            <div class="est-marker" style="left: {{ e.score }}%;"></div>
+          </div>
+          <div class="est-zones">
+            <span style="width: {{ e.low_below }}%">Low</span>
+            <span style="width: {{ e.high_from - e.low_below }}%">Medium</span>
+            <span style="width: {{ 100 - e.high_from }}%">High</span>
+          </div>
+
+          {% if e.range_lo is not none %}
+          <p class="small mb-2">Likely between <strong>{{ e.range_lo|round|int }}</strong> and <strong>{{ e.range_hi|round|int }}</strong>
+            <span class="text-muted">(typical error &plusmn;{{ e.error }})</span></p>
+          {% endif %}
+
+          <div class="small text-muted mb-1">How sure is the model about the level?</div>
+          <div class="est-probs mb-1">
+            {% for p in e.probs %}{% if p.pct > 0 %}<span style="width: {{ p.pct }}%; background: {{ colors[p.level] }}" title="{{ p.level|capitalize }} {{ p.pct }}%"></span>{% endif %}{% endfor %}
+          </div>
+          <div class="small mb-2">
+            {% for p in e.probs %}<span class="me-2"><span class="est-dot" style="background: {{ colors[p.level] }}"></span>{{ p.level|capitalize }} {{ p.pct }}%</span>{% endfor %}
+          </div>
+
+          {% if e.levers %}
+          <div class="small fw-semibold mt-3">In the model, what would add the most</div>
+          <ul class="small ps-3 mb-2">
+            {% for l in e.levers %}<li>{{ l.text }} <span class="text-success">+{{ l.gain }} pts</span></li>{% endfor %}
+          </ul>
+          {% endif %}
+
+          <details class="small mb-2">
+            <summary class="text-primary" style="cursor: pointer;">How to read this</summary>
+            <ul class="ps-3 mt-2 mb-0 text-muted">
+              <li>The score is the model's guess (0&ndash;100) for a day with these inputs.</li>
+              <li>Levels: Low below {{ e.low_below }}, Medium up to {{ e.high_from }}, High above.</li>
+              <li>The outlined stripe on the bar is the typical error; the real figure could land anywhere in it.</li>
+              <li>The &quot;add the most&quot; list re-runs the model with one change. It shows what the model learned, not what will happen to you.</li>
+              <li>The model was trained on simulated days. It is a demo of the method, not advice.</li>
+            </ul>
+          </details>
+
+          <p class="small text-muted mb-1">Based on {{ e.source }}. Not a forecast for tomorrow.</p>
+          <a class="small" href="{{ url_for('insights.estimate_log', log_id=e.log_id) }}">Details</a>
           <span class="small text-muted">&middot;</span>
           <a class="small" href="{{ url_for('insights.index') }}">Try your own numbers</a>
         {% elif data.estimate.status == "no_log" %}
@@ -162,6 +208,16 @@
   .heatmap { overflow-x: auto; }
   #estimate-card { scroll-margin-top: 1rem; transition: box-shadow .3s; }
   #estimate-card.flash { box-shadow: 0 0 0 .25rem rgba(13, 110, 253, .35); }
+
+  /* estimate card */
+  .est-gauge { position: relative; height: 10px; border-radius: 6px; margin: .9rem 0 .2rem; }
+  .est-range { position: absolute; top: -3px; bottom: -3px; border: 2px solid rgba(33, 37, 41, .6); border-radius: 6px; }
+  .est-marker { position: absolute; top: -5px; width: 4px; height: 20px; border-radius: 2px; background: #212529; transform: translateX(-50%); }
+  .est-zones { display: flex; font-size: .7rem; color: #6c757d; margin-bottom: .6rem; }
+  .est-zones span { text-align: center; }
+  .est-probs { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: #e9ecef; }
+  .est-probs span { display: block; height: 100%; }
+  .est-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }
 </style>
 
 <script>

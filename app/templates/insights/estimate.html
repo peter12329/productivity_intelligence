@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Estimate for {{ log.log_date }}{% endblock %}
+
+{% block content %}
+<h1 class="h3 mb-3">Estimate for {{ log.log_date.strftime("%a, %b %d, %Y") }}</h1>
+
+{% if message %}
+  <div class="alert alert-info">{{ message }}</div>
+{% else %}
+<div class="row g-4">
+  <div class="col-lg-5">{% include "insights/_result.html" %}</div>
+  <div class="col-lg-7">
+    <h2 class="h6">Inputs used for this day</h2>
+    <table class="table table-sm">
+      <tbody>
+        {% for label, value in rows %}<tr><td>{{ label }}</td><td class="text-end">{{ value }}</td></tr>{% endfor %}
+      </tbody>
+    </table>
+    {% if drivers %}
+    <h2 class="h6 mt-3">What the model leans on most</h2>
+    <ul class="small mb-1">
+      {% for name, pct in drivers %}<li>{{ name }}: {{ pct }}%</li>{% endfor %}
+    </ul>
+    <p class="small text-muted">This is how much the trained model relies on each input overall. It shows what the model learned from synthetic data, not what causes your score.</p>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+<a class="btn btn-link px-0" href="{{ url_for('main.index') }}">Back to home</a>
+{% endblock %}

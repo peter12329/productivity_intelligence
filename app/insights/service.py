@@ -9,7 +9,11 @@ Returns one of:
     {"status": "no_log"}                  no log in the last month
     {"status": "incomplete", "message"}   a log exists but inputs are missing;
                                           the message names them
-    {"status": "ok", "score", "level", "error", "log_id", "log_date"}
+    {"status": "ok", "score", "level", "error", "log_id", "log_date",
+                 plus what the home card shows: "range_lo"/"range_hi" (score +-
+                 typical error), "probs" (chance of each level), "low_below"/
+                 "high_from" (level cut-offs), "levers" (biggest what-ifs),
+                 "source" ("today's log", "yesterday's log", ...)}
 
 How the inputs are built
     The model's inputs are named like the DATASET (ml/settings.py FEATURES),
@@ -35,8 +39,8 @@ from datetime import date, timedelta
 
 from flask import current_app
 
-from ml.predict import ModelsNotTrainedError, predict_day
-from ml.settings import FEATURES
+from ml.predict import ModelsNotTrainedError, predict_day, suggest_levers
+from ml.settings import FEATURES, LEVELS, LEVEL_BINS
 
 # dataset feature name -> ProductivityLog column
 DB_FIELDS = {
@@ -94,6 +98,44 @@ def _missing_message(log, missing):
             f"{names}. Log them to get an estimate.")
 
 
+def _source(d):
+    today = date.today()
+    if d == today:
+        return "today's log"
+    if d == today - timedelta(days=1):
+        return "yesterday's log"
+    return f"your log from {d.isoformat()}"
+
+
+def _ok(log, values, result):
+    """Everything the home-page card shows for a complete day."""
+    score = result["predicted_score"]
+    err = result["typical_error_points"]
+    d = log.log_date
+    try:
+        levers = suggest_levers(values)
+    except Exception:                       # the extras must never break the card
+        current_app.logger.exception("ML levers failed")
+        levers = []
+    probs = result.get("level_probabilities", {})
+    return {
+        "status": "ok",
+        "score": score,
+        "level": result["predicted_level"],
+        "error": round(err, 1) if err else None,
+        "range_lo": round(max(0.0, score - err), 1) if err else None,
+        "range_hi": round(min(100.0, score + err), 1) if err else None,
+        "probs": [{"level": lvl, "pct": round(probs.get(lvl, 0) * 100)}
+                  for lvl in LEVELS],
+        "low_below": LEVEL_BINS[1],
+        "high_from": LEVEL_BINS[2],
+        "levers": levers,
+        "source": _source(d),
+        "log_id": log.id,
+        "log_date": d.isoformat() if hasattr(d, "isoformat") else str(d),
+    }
+
+
 def latest_estimate(user_id: int):
     try:
         from app.habits import deep_work_days_prev7, log_streak
@@ -132,15 +174,7 @@ def latest_estimate(user_id: int):
                     newest_missing = (log, missing)
                 continue
             result = predict_day(values)
-            d = log.log_date
-            return {
-                "status": "ok",
-                "score": result["predicted_score"],
-                "level": result["predicted_level"],
-                "error": result["typical_error_points"],
-                "log_id": log.id,
-                "log_date": d.isoformat() if hasattr(d, "isoformat") else str(d),
-            }
+            return _ok(log, values, result)
 
         log, missing = newest_missing
         return {"status": "incomplete", "message": _missing_message(log, missing)}

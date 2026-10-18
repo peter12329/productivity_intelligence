@@ -1,4 +1,5 @@
 from datetime import date, datetime, timedelta
+from types import SimpleNamespace
 
 from flask import (Blueprint, abort, flash, jsonify, redirect,
                    render_template, request, url_for)
@@ -164,6 +165,85 @@ def api_dashboard():
     return jsonify(dashboard_stats(current_user))
 
 
+
+# ---------------------------------------------------------- log-page helpers
+# Quick-pick values shown as chips on the log page, by habit key. Anything not
+# listed falls back to the full grid when it is short (<= 12 values).
+PRESETS = {
+    "study": [0, 1, 2, 3, 4, 5, 6],
+    "sleep": [5, 6, 6.5, 7, 7.5, 8, 9],
+    "disruptions": [0, 1, 2, 3, 4, 5],
+    "free_hours": [0, 1, 2, 4, 6, 8, 10],
+    "stress": list(range(1, 11)),
+    "sessions": [0, 1, 2, 3, 4, 5, 6],
+}
+CHIP_LIMIT = 6            # dropdown habits with more choices keep a <select>
+
+
+def _goal(habit, value):
+    """True / False if `value` meets the habit's goal, None if it has no goal.
+
+    Uses the app's own is_met(), so it works whatever shape HABITS has.
+    """
+    try:
+        return is_met(habit, SimpleNamespace(**{habit["field"]: value}))
+    except Exception:
+        return None
+
+
+def _date_arg():
+    """?date=YYYY-MM-DD for the log page (today if missing, bad or future)."""
+    raw = request.args.get("date")
+    try:
+        chosen = date.fromisoformat(raw) if raw else date.today()
+    except ValueError:
+        chosen = date.today()
+    return min(chosen, date.today())
+
+
+def _grid(habit):
+    lo, hi = habit.get("min"), habit.get("max")
+    if lo is None or hi is None:
+        return []
+    step = habit.get("step") or 1
+    n = min(int(round((hi - lo) / step)) + 1, 400)
+    return [round(lo + i * step, 6) for i in range(n)]
+
+
+def _log_page_context(habit, choice, chosen, existing_value):
+    """Extra data the log page needs: presets, goal table, current value."""
+    ctx = {
+        "chosen_iso": chosen.isoformat(),
+        "today_iso": date.today().isoformat(),
+        "yesterday_iso": (date.today() - timedelta(days=1)).isoformat(),
+        "chosen_is_today": chosen == date.today(),
+        "chip_limit": CHIP_LIMIT,
+        "presets": [], "goal_points": [], "has_goal": False, "choice_ok": {},
+        "current_value": existing_value, "current_label": None,
+    }
+    if existing_value is not None:
+        if choice:
+            ctx["current_label"] = _choice_label(habit, existing_value) or str(existing_value)
+        else:
+            ctx["current_label"] = f"{existing_value:g} {habit.get('unit', '')}".strip()
+
+    if choice:
+        ctx["choice_ok"] = {str(v): _goal(habit, v)
+                            for v, _ in habit.get("choices", [])}
+        ctx["has_goal"] = any(ok is not None for ok in ctx["choice_ok"].values())
+        return ctx
+
+    grid = _grid(habit)
+    points = [(v, _goal(habit, v)) for v in grid]
+    ctx["has_goal"] = any(ok is not None for _, ok in points)
+    if ctx["has_goal"]:
+        ctx["goal_points"] = [[v, bool(ok)] for v, ok in points if ok is not None]
+    wanted = PRESETS.get(habit["key"]) or (grid if len(grid) <= 12 else [])
+    lo, hi = habit.get("min"), habit.get("max")
+    ctx["presets"] = [{"value": v, "ok": _goal(habit, v)} for v in wanted
+                      if (lo is None or v >= lo) and (hi is None or v <= hi)]
+    return ctx
+
 # ---------------------------------------------------------------- log a habit
 @main_bp.route("/habit/<key>", methods=["GET", "POST"])
 @login_required
@@ -177,11 +257,18 @@ def log_habit(key):
     if choice:
         form.value.choices = [(str(v), label) for v, label in habit["choices"]]
 
+    chosen = _date_arg() if request.method == "GET" else (
+        form.log_date.data or date.today())
+    existing_value = None
     if request.method == "GET":
-        existing = _get_log(current_user.id, date.today())
-        current = getattr(existing, habit["field"], None) if existing else None
-        if current is not None:
-            form.value.data = str(current) if choice else current
+        form.log_date.data = chosen
+        existing = _get_log(current_user.id, chosen)
+        existing_value = getattr(existing, habit["field"], None) if existing else None
+        if existing_value is not None:
+            form.value.data = str(existing_value) if choice else existing_value
+    elif form.log_date.data:
+        existing = _get_log(current_user.id, form.log_date.data)
+        existing_value = getattr(existing, habit["field"], None) if existing else None
 
     if form.validate_on_submit():
         lo, hi = habit.get("min"), habit.get("max")
@@ -189,7 +276,7 @@ def log_habit(key):
             form.log_date.errors.append("Date can't be in the future.")
         elif not choice and lo is not None and hi is not None \
                 and not lo <= form.value.data <= hi:
-            form.value.errors.append(f"Enter a value from {lo} to {hi}.")
+            form.value.errors.append(f"Enter a value from {lo:g} to {hi:g}.")
         else:
             try:
                 stored = habit["cast"](form.value.data)
@@ -204,19 +291,19 @@ def log_habit(key):
                 if choice:
                     shown = _choice_label(habit, form.value.data) or form.value.data
                 else:
-                    unit = habit.get("unit", "")
-                    shown = f"{form.value.data:g} {unit}".strip()
+                    shown = f"{form.value.data:g} {habit.get('unit', '')}".strip()
 
-                if "met" in habit:                        # goal habits
-                    met = is_met(habit, log)
+                met = is_met(habit, log) if _goal(habit, stored) is not None else None
+                if met is None:                           # context inputs: no goal
+                    flash(f"{habit['name']} saved: {shown}.", "success")
+                else:
                     flash(f"{habit['name']}: "
                           f"{'goal met' if met else 'goal not met'} ({shown}).",
                           "success" if met else "info")
-                else:                                     # context inputs
-                    flash(f"{habit['name']} saved: {shown}.", "success")
                 return redirect(url_for("main.index"))
 
-    return render_template("habit_form.html", form=form, habit=habit)
+    ctx = _log_page_context(habit, choice, chosen, existing_value)
+    return render_template("habit_form.html", form=form, habit=habit, **ctx)
 
 
 @main_bp.route("/habit/<key>/toggle", methods=["POST"])

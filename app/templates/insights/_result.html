@@ -1,0 +1,17 @@
+<div class="card">
+  <div class="card-body">
+    <div class="d-flex justify-content-between align-items-center">
+      <h2 class="h6 mb-0">Estimated score</h2>
+      <span class="badge bg-warning text-dark">Experimental</span>
+    </div>
+    <div class="display-6 fw-semibold mt-2">{{ result.predicted_score }}<span class="fs-6 text-muted"> / 100</span></div>
+    <p class="mb-2">Level: <strong>{{ result.predicted_level }}</strong>
+      {% if result.typical_error_points %}<span class="text-muted">&middot; typically &plusmn;{{ result.typical_error_points|round(1) }} points</span>{% endif %}
+    </p>
+    {% for level, p in result.level_probabilities.items() %}
+    <div class="d-flex justify-content-between small"><span>{{ level }}</span><span>{{ (p * 100)|round|int }}%</span></div>
+    <div class="progress mb-2" style="height: 6px;"><div class="progress-bar" style="width: {{ (p * 100)|round|int }}%"></div></div>
+    {% endfor %}
+    <p class="small text-muted mb-0 mt-2">{{ result.disclaimer }}</p>
+  </div>
+</div>

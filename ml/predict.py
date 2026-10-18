@@ -24,8 +24,23 @@ import pandas as pd
 import ml.settings as settings
 from ml.settings import ARTIFACT_DIR, FEATURES, LEVELS
 
-# Optional: numeric ranges. Features without an entry are not range-checked.
-FEATURE_RANGES = getattr(settings, "FEATURE_RANGES", {})
+# Allowed range of every numeric input. settings.FEATURE_RANGES (if present)
+# overrides these, but a feature can no longer slip through unchecked just
+# because settings.py is out of date.
+DEFAULT_RANGES = {
+    "deep_work": (0, 24),
+    "sleep_hours": (0, 24),
+    "caffeine_level": (0, 10),
+    "stress_level": (1, 10),
+    "journaled": (0, 1),
+    "log_streak": (0, 14),
+    "disruptions": (0, 20),
+    "junk_food": (0, 1),
+    "task_difficulty": (1, 5),
+    "deep_work_days_prev7": (0, 7),
+    "free_hours": (0, 24),
+}
+FEATURE_RANGES = {**DEFAULT_RANGES, **getattr(settings, "FEATURE_RANGES", {})}
 
 DISCLAIMER = (
     "Experimental: trained on synthetic (simulated) data. This is an estimate "
@@ -139,6 +154,49 @@ def predict_day(values: dict) -> dict:
         "experimental": True,
         "disclaimer": DISCLAIMER,
     }
+
+
+# What-if levers: (feature, value to try, wording). suggest_levers() re-runs the
+# regressor with one input changed and reports how much the estimate moves.
+# This is what the MODEL does, not proof that the change causes anything.
+LEVERS = [
+    ("sleep_hours", 7.5, "Sleep about 7.5 h"),
+    ("deep_work", 4, "Reach about 4 h of deep work"),
+    ("stress_level", 3, "Bring stress down to 3"),
+    ("disruptions", 0, "Have no disruptions"),
+    ("junk_food", 0, "Skip junk food"),
+    ("journaled", 1, "Journal today"),
+    ("caffeine_level", 3, "Keep caffeine around level 3"),
+]
+
+
+def suggest_levers(values: dict, top: int = 3, min_gain: float = 0.5) -> list:
+    """Biggest single changes (by the model) that would raise the score."""
+    models = _load()
+    meta = models["metadata"]
+    base = _validate(values, meta)
+
+    rows, info = [], []
+    for feature, target, text in LEVERS:
+        if feature not in FEATURES:
+            continue
+        try:
+            if float(values[feature]) == target:
+                continue
+        except (TypeError, ValueError, KeyError):
+            continue
+        rows.append(_validate({**values, feature: target}, meta))
+        info.append((feature, text))
+    if not rows:
+        return []
+
+    preds = models["regressor"].predict(pd.concat([base] + rows, ignore_index=True))
+    found = []
+    for (feature, text), p in zip(info, preds[1:]):
+        gain = float(p - preds[0])
+        if gain >= min_gain:
+            found.append({"feature": feature, "text": text, "gain": round(gain, 1)})
+    return sorted(found, key=lambda d: -d["gain"])[:top]
 
 
 def predict_for_log(log) -> dict:

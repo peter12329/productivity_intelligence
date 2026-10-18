@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Try your own numbers{% endblock %}
+
+{% block content %}
+<div class="row g-4">
+  <div class="col-lg-7">
+    <h1 class="h3 mb-1">Try your own numbers</h1>
+    <p class="text-muted">Describe a day and see what the model estimates for it. This does not save anything.</p>
+
+    {% if not trained %}
+    <div class="alert alert-warning">Models are not trained yet. Run <code>python -m ml.train</code> and restart the app.</div>
+    {% endif %}
+
+    <form method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="row">
+        {% for f in fields %}
+        <div class="col-sm-6 mb-3">
+          {% if f.kind == "select" %}
+            <label class="form-label" for="{{ f.name }}">{{ f.label }}</label>
+            <select class="form-select" id="{{ f.name }}" name="{{ f.name }}">
+              {% for o in f.options %}<option value="{{ o }}" {% if o == f.value %}selected{% endif %}>{{ o|capitalize }}</option>{% endfor %}
+            </select>
+          {% elif f.kind == "check" %}
+            <div class="form-check mt-4">
+              <input class="form-check-input" type="checkbox" id="{{ f.name }}" name="{{ f.name }}" value="1" {% if f.value %}checked{% endif %}>
+              <label class="form-check-label" for="{{ f.name }}">{{ f.label }}</label>
+            </div>
+          {% else %}
+            <label class="form-label" for="{{ f.name }}">{{ f.label }}</label>
+            <input class="form-control{{ ' is-invalid' if error_field == f.name }}" type="number" id="{{ f.name }}" name="{{ f.name }}" value="{{ f.value }}"
+                   {% if f.min is not none %}min="{{ f.min }}"{% endif %} {% if f.max is not none %}max="{{ f.max }}"{% endif %} step="{{ f.step }}" required>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      <button class="btn btn-primary" type="submit" {% if not trained %}disabled{% endif %}>Estimate</button>
+      <a class="btn btn-link" href="{{ url_for('main.index') }}">Back</a>
+    </form>
+  </div>
+
+  <div class="col-lg-5">
+    {% if error %}<div class="alert alert-danger">{{ error }}</div>{% endif %}
+    {% if result %}{% include "insights/_result.html" %}{% endif %}
+    <p class="small text-muted mt-3">
+      You have {{ n_logs }} logged day{{ "s" if n_logs != 1 }}.
+      {% if stage == "general" %}Estimates use a model trained on synthetic data only.
+      {% elif stage == "descriptive" %}You have enough days to start comparing the estimate with your own averages.
+      {% else %}You have enough days to look for trends in your own logs.{% endif %}
+    </p>
+  </div>
+</div>
+{% endblock %}

@@ -2,41 +2,151 @@
 {% block title %}{{ habit.name }}{% endblock %}
 
 {% block content %}
+<style>
+  /* keep the goal tick readable on a selected (blue) chip */
+  .btn-check:checked + .btn .text-success, .btn-primary .text-success { color: inherit !important; }
+</style>
+{% set val = form.value.data %}
 <div class="row justify-content-center">
-  <div class="col-md-6 col-lg-4">
+  <div class="col-md-7 col-lg-5">
     <h1 class="h4 mb-1"><span class="dot" style="background: {{ habit.color }}"></span>{{ habit.name }}</h1>
-    {% if habit.choices %}
-    <p class="text-muted">Choose your {{ habit.label|lower }}.</p>
-    {% else %}
-    <p class="text-muted">Enter your {{ habit.label|lower }} ({{ habit.unit }}).</p>
+    <p class="text-muted mb-3">
+      {% if has_goal %}Goal: {{ habit.name }}.{% else %}No goal here. It is context the estimate uses.{% endif %}
+      {% if habit.choices %}Choose your {{ habit.label|lower }}.{% else %}Enter your {{ habit.label|lower }}{% if habit.unit %} in {{ habit.unit }}{% endif %}.{% endif %}
+    </p>
+
+    {% if current_label %}
+    <div class="alert alert-light border py-2 small">
+      Already logged for {{ "today" if chosen_is_today else chosen_iso }}: <strong>{{ current_label }}</strong>. Saving replaces it.
+    </div>
     {% endif %}
+
     <form method="post" novalidate>
       {{ form.hidden_tag() }}
+
+      <!-- date: today by default; pick another day to back-fill -->
       <div class="mb-3">
-        {{ form.log_date.label(class="form-label") }}
-        {{ form.log_date(class="form-control" ~ (" is-invalid" if form.log_date.errors else "")) }}
+        <label class="form-label d-flex justify-content-between" for="log_date">
+          <span>Date</span>
+          <span class="small">
+            <a href="{{ url_for('main.log_habit', key=habit.key, date=today_iso) }}" class="{{ 'fw-semibold' if chosen_iso == today_iso }}">Today</a>
+            &middot;
+            <a href="{{ url_for('main.log_habit', key=habit.key, date=yesterday_iso) }}" class="{{ 'fw-semibold' if chosen_iso == yesterday_iso }}">Yesterday</a>
+          </span>
+        </label>
+        <input class="form-control{{ ' is-invalid' if form.log_date.errors }}" type="date" id="log_date" name="log_date"
+               value="{{ form.log_date.data.isoformat() if form.log_date.data else chosen_iso }}" max="{{ today_iso }}" required>
         {% for error in form.log_date.errors %}<div class="invalid-feedback">{{ error }}</div>{% endfor %}
       </div>
+
       <div class="mb-3">
-        {% if habit.choices %}
-        {# Any choice-type input (caffeine, junk food, day type, ...) gets a dropdown.
-           It posts as "value", so the existing form field still receives it. #}
         <label class="form-label" for="value">{{ habit.label }}</label>
-        <select id="value" name="value" class="form-select{{ ' is-invalid' if form.value.errors }}" required>
-          <option value="" disabled {% if form.value.data is none %}selected{% endif %}>Choose...</option>
-          {% for value, label in habit.choices %}
-          <option value="{{ value }}" {% if form.value.data is not none and form.value.data|string == value|string %}selected{% endif %}>{{ label }}</option>
-          {% endfor %}
-        </select>
+
+        {% if habit.choices and habit.choices|length <= chip_limit %}
+          <!-- few choices: big tappable options -->
+          <div class="d-flex flex-wrap gap-2">
+            {% for value, label in habit.choices %}
+              <input type="radio" class="btn-check" name="value" id="v{{ loop.index }}" value="{{ value }}" autocomplete="off"
+                     {% if val is not none and val|string == value|string %}checked{% endif %}>
+              <label class="btn btn-outline-primary" for="v{{ loop.index }}">{{ label }}{% if choice_ok.get(value|string) %} <span class="text-success">&#10003;</span>{% endif %}</label>
+            {% endfor %}
+          </div>
+          {% if has_goal %}<div class="form-text">&#10003; = meets the goal</div>{% endif %}
+
+        {% elif habit.choices %}
+          <select id="value" name="value" class="form-select form-select-lg{{ ' is-invalid' if form.value.errors }}">
+            <option value="" disabled {% if val is none %}selected{% endif %}>Choose...</option>
+            {% for value, label in habit.choices %}
+              <option value="{{ value }}" {% if val is not none and val|string == value|string %}selected{% endif %}>{{ label }}{% if choice_ok.get(value|string) %}  &#10003;{% endif %}</option>
+            {% endfor %}
+          </select>
+          {% if has_goal %}<div class="form-text">&#10003; = meets the goal</div>{% endif %}
+
         {% else %}
-        {{ form.value.label(class="form-label") }}
-        {{ form.value(class="form-control" ~ (" is-invalid" if form.value.errors else ""), step=habit.step, min=habit.min, max=habit.max) }}
+          <div class="input-group input-group-lg">
+            <button class="btn btn-outline-secondary" type="button" id="dec" aria-label="Decrease">&minus;</button>
+            <input class="form-control text-center{{ ' is-invalid' if form.value.errors }}" type="number" inputmode="decimal"
+                   id="value" name="value" value="{{ '' if val is none else '%g'|format(val) }}" placeholder="0"
+                   step="{{ habit.step or 1 }}"
+                   {% if habit.min is defined and habit.min is not none %}min="{{ habit.min }}"{% endif %}
+                   {% if habit.max is defined and habit.max is not none %}max="{{ habit.max }}"{% endif %} autofocus>
+            {% if habit.unit %}<span class="input-group-text">{{ habit.unit }}</span>{% endif %}
+            <button class="btn btn-outline-secondary" type="button" id="inc" aria-label="Increase">+</button>
+          </div>
+          {% if presets %}
+          <div class="d-flex flex-wrap gap-2 mt-2">
+            {% for p in presets %}
+              <button type="button" class="btn btn-sm btn-outline-secondary preset" data-value="{{ p.value }}">{{ '%g'|format(p.value) }}{% if p.ok %} <span class="text-success">&#10003;</span>{% endif %}</button>
+            {% endfor %}
+          </div>
+          {% if has_goal %}<div class="form-text">&#10003; = meets the goal</div>{% endif %}
+          {% endif %}
+          <div id="goal-msg" class="small mt-2" aria-live="polite"></div>
+          <script id="goal-points" type="application/json">{{ goal_points|tojson }}</script>
         {% endif %}
-        {% for error in form.value.errors %}<div class="invalid-feedback">{{ error }}</div>{% endfor %}
+
+        {% for error in form.value.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
       </div>
-      {{ form.submit(class="btn btn-primary") }}
+
+      <button class="btn btn-primary" type="submit">{{ "Update" if current_label else "Save" }}</button>
       <a class="btn btn-link" href="{{ url_for('main.index') }}">Cancel</a>
     </form>
   </div>
 </div>
+
+<script>
+  (function () {
+    var dateEl = document.getElementById("log_date");
+    if (dateEl) {
+      dateEl.addEventListener("change", function () {
+        if (dateEl.value) location.href = "{{ url_for('main.log_habit', key=habit.key) }}?date=" + dateEl.value;
+      });
+    }
+
+    var input = document.getElementById("value");
+    var pts = document.getElementById("goal-points");
+    if (!input || input.tagName !== "INPUT") return;
+
+    var step = parseFloat(input.step) || 1;
+    var min = input.min !== "" ? parseFloat(input.min) : -Infinity;
+    var max = input.max !== "" ? parseFloat(input.max) : Infinity;
+    var points = pts ? JSON.parse(pts.textContent || "[]") : [];
+    var msg = document.getElementById("goal-msg");
+    var chips = document.querySelectorAll(".preset");
+
+    function fmt(n) { return String(Math.round(n * 1e6) / 1e6); }
+
+    function sync() {
+      var v = parseFloat(input.value);
+      chips.forEach(function (c) {
+        var on = !isNaN(v) && Math.abs(parseFloat(c.dataset.value) - v) < 1e-6;
+        c.classList.toggle("btn-primary", on);
+        c.classList.toggle("btn-outline-secondary", !on);
+      });
+      msg.textContent = "";
+      if (isNaN(v) || !points.length) return;
+      var hit = null;
+      points.forEach(function (p) { if (Math.abs(p[0] - v) < 1e-6) hit = p[1]; });
+      if (hit === null) return;
+      msg.className = "small mt-2 " + (hit ? "text-success" : "text-secondary");
+      msg.textContent = hit ? "\u2713 Meets your goal" : "Goal not met";
+    }
+
+    function nudge(dir) {
+      var v = parseFloat(input.value);
+      if (isNaN(v)) v = dir > 0 ? min === -Infinity ? 0 : min : 0;
+      else v = v + dir * step;
+      input.value = fmt(Math.min(max, Math.max(min, v)));
+      sync();
+    }
+
+    document.getElementById("dec").addEventListener("click", function () { nudge(-1); });
+    document.getElementById("inc").addEventListener("click", function () { nudge(1); });
+    chips.forEach(function (c) {
+      c.addEventListener("click", function () { input.value = c.dataset.value; sync(); });
+    });
+    input.addEventListener("input", sync);
+    sync();
+  })();
+</script>
 {% endblock %}
