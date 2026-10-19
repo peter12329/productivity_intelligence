@@ -1,0 +1,4489 @@
+﻿
+===== .env.example =====
+
+
+===== README.md =====
+
+basta mao rana
+
+===== add_columns.py =====
+
+"""One-off SQLite migration: adds the new habit columns to productivity_logs.
+
+Run from the project root with Flask stopped:
+    python add_columns.py
+Safe to run more than once (existing columns are skipped).
+"""
+import sqlite3
+from pathlib import Path
+
+DB = Path(__file__).resolve().parent / "instance" / "ppia.db"
+
+NEW_COLUMNS = {
+    "sleep_hours": "FLOAT",
+    "disruptions": "INTEGER",
+    "junk_food": "INTEGER",
+    "task_difficulty": "INTEGER",
+    "free_hours": "FLOAT",
+    "day_type": "VARCHAR(16)",
+    "weather": "VARCHAR(16)",
+}
+
+
+def main():
+    if not DB.exists():
+        raise SystemExit(f"Database not found: {DB}")
+    con = sqlite3.connect(DB)
+    try:
+        table = None
+        for (name,) in con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"):
+            cols = [r[1] for r in con.execute(f'PRAGMA table_info("{name}")')]
+            if "study_hours" in cols:
+                table, existing = name, set(cols)
+                break
+        if table is None:
+            raise SystemExit("No table with a study_hours column found.")
+        print(f"Table: {table}")
+        for col, typ in NEW_COLUMNS.items():
+            if col in existing:
+                print(f"  skip  {col} (already there)")
+            else:
+                con.execute(f'ALTER TABLE "{table}" ADD COLUMN {col} {typ}')
+                print(f"  added {col} {typ}")
+        con.commit()
+    finally:
+        con.close()
+    print("Done.")
+
+
+if __name__ == "__main__":
+    main()
+
+===== app/__init__.py =====
+
+from flask import Flask
+from flask_wtf import CSRFProtect
+
+from config import Config
+from app.extensions import db, login_manager
+
+
+def create_app(config_class=Config):
+    app = Flask(__name__)
+    app.config.from_object(config_class)
+
+    db.init_app(app)
+    login_manager.init_app(app)
+    CSRFProtect(app)
+
+    from app import models  # noqa: F401
+
+    from app.main.routes import main_bp
+    app.register_blueprint(main_bp)
+
+    from app.auth.routes import auth_bp
+    app.register_blueprint(auth_bp)
+
+    from app.insights.routes import insights
+    app.register_blueprint(insights)
+
+    with app.app_context():
+        db.create_all()
+
+    return app
+
+===== app/auth/__init__.py =====
+
+
+===== app/auth/forms.py =====
+
+from flask_wtf import FlaskForm
+from wtforms import StringField, PasswordField, SubmitField
+from wtforms.validators import (
+    DataRequired, Email, EqualTo, Length, ValidationError
+)
+
+from app.models import User
+
+
+class RegisterForm(FlaskForm):
+    username = StringField(
+        "Username", validators=[DataRequired(), Length(min=3, max=50)]
+    )
+    email = StringField(
+        "Email", validators=[DataRequired(), Email(), Length(max=120)]
+    )
+    password = PasswordField(
+        "Password", validators=[DataRequired(), Length(min=8, max=128)]
+    )
+    confirm_password = PasswordField(
+        "Confirm password",
+        validators=[DataRequired(), EqualTo("password", message="Passwords must match.")],
+    )
+    submit = SubmitField("Create account")
+
+    def validate_username(self, field):
+        if User.query.filter_by(username=field.data).first():
+            raise ValidationError("That username is already taken.")
+
+    def validate_email(self, field):
+        if User.query.filter_by(email=field.data.lower()).first():
+            raise ValidationError("That email is already registered.")
+
+
+class LoginForm(FlaskForm):
+    email = StringField("Email", validators=[DataRequired(), Email()])
+    password = PasswordField("Password", validators=[DataRequired()])
+    submit = SubmitField("Log in")
+
+===== app/auth/routes.py =====
+
+from flask import Blueprint, render_template, redirect, url_for, flash, request
+from flask_login import login_user, logout_user, login_required, current_user
+
+from app.extensions import db
+from app.models import User
+from app.auth.forms import RegisterForm, LoginForm
+
+auth_bp = Blueprint("auth", __name__)
+
+
+@auth_bp.route("/register", methods=["GET", "POST"])
+def register():
+    if current_user.is_authenticated:
+        return redirect(url_for("main.index"))
+
+    form = RegisterForm()
+    if form.validate_on_submit():
+        user = User(
+            username=form.username.data.strip(),
+            email=form.email.data.strip().lower(),
+        )
+        user.set_password(form.password.data)
+        db.session.add(user)
+        db.session.commit()
+        flash("Account created. Please log in.", "success")
+        return redirect(url_for("auth.login"))
+
+    return render_template("register.html", form=form)
+
+
+@auth_bp.route("/login", methods=["GET", "POST"])
+def login():
+    if current_user.is_authenticated:
+        return redirect(url_for("main.index"))
+
+    form = LoginForm()
+    if form.validate_on_submit():
+        user = User.query.filter_by(email=form.email.data.strip().lower()).first()
+        if user and user.check_password(form.password.data):
+            login_user(user)
+            next_page = request.args.get("next")
+            # only follow "next" if it is a path on this site
+            if next_page and next_page.startswith("/") and not next_page.startswith("//"):
+                return redirect(next_page)
+            return redirect(url_for("main.index"))
+        flash("Invalid email or password.", "danger")
+
+    return render_template("login.html", form=form)
+
+
+@auth_bp.route("/logout", methods=["POST"])
+@login_required
+def logout():
+    logout_user()
+    flash("You have been logged out.", "info")
+    return redirect(url_for("main.index"))
+
+===== app/extensions.py =====
+
+from flask_sqlalchemy import SQLAlchemy
+from flask_login import LoginManager
+
+db = SQLAlchemy()
+login_manager = LoginManager()
+login_manager.login_view = "auth.login"   # where logged-out users get sent
+
+===== app/habits.py =====
+
+"""Habit definitions.
+
+Three kinds of things live here:
+
+  HABITS     goals shown in the weekly grid, heatmap and today panel. Each has a
+             "met" rule, so a day is done / not met / no data.
+  CONTEXT    daily inputs with no goal (free hours, day type, ...). They are
+             logged like habits but never get a grid cell or a "met" state.
+  computed   log_streak() and deep_work_days_prev7() are worked out from
+             existing entries, so nothing is logged for them.
+
+An input is one of three types:
+  number   free numeric input (min / max / step / cast)
+  check    one-tap toggle, True = done
+  choice   dropdown. "choices" is a list of (value, label) pairs.
+
+Keys and fields of the original habits (study, study_hours, caffeine_mg, ...) are
+unchanged on purpose: keys appear in URLs and fields are database columns.
+"""
+
+from datetime import timedelta
+
+# Caffeine is logged on a 0-10 level scale: 1 level = 40 mg, so 10 = 400 mg.
+# Keep this equal to MG_PER_POINT in ml/dummydataset.py.
+CAFFEINE_MG_PER_LEVEL = 40
+CAFFEINE_LIMIT_MG = 300
+CAFFEINE_LEVELS = [(n, f"{n} ({n * CAFFEINE_MG_PER_LEVEL} mg)") for n in range(0, 11)]
+
+DEEP_WORK_GOAL = 3        # hours, same as the "Deep work 3h+" habit
+STREAK_CAP = 14           # same cap as ml/dummydataset.py
+
+# ----------------------------- goal habits ----------------------------------
+HABITS = [
+    {
+        "key": "study",                  # keep: used in URLs and the database
+        "name": "Deep work 3h+",
+        "label": "Deep work hours",
+        "field": "study_hours",           # keep: database column
+        "unit": "hours",
+        "min": 0, "max": 24, "step": 0.5,
+        "cast": float,
+        "color": "#6f42c1",
+        "met": lambda v: v >= DEEP_WORK_GOAL,
+    },
+    {
+        "key": "caffeine",
+        "name": "Caffeine under 300mg",
+        "label": "Caffeine level",
+        "field": "caffeine_mg",           # keep: database column (stores a 0-10 level)
+        "type": "choice",
+        "choices": CAFFEINE_LEVELS,
+        "unit": "level 0-10, 1 level = 40 mg",
+        "cast": int,
+        "color": "#6c757d",
+        # level 7 = 280 mg is met, level 8 = 320 mg is not
+        "met": lambda v: v * CAFFEINE_MG_PER_LEVEL < CAFFEINE_LIMIT_MG,
+    },
+    {
+        "key": "stress", "name": "Stress 5 or lower", "label": "Stress level",
+        "field": "stress_level", "unit": "out of 10",
+        "min": 1, "max": 10, "step": 1, "cast": int,
+        "color": "#6c757d", "met": lambda v: v <= 5,
+    },
+    {
+        "key": "sessions", "name": "2+ deep work sessions", "label": "Deep work sessions",
+        "field": "study_sessions", "unit": "sessions",
+        "min": 0, "max": 50, "step": 1, "cast": int,
+        "color": "#0dcaf0", "met": lambda v: v >= 2,
+    },
+    {
+        "key": "journal",
+        "name": "Journaling",
+        "type": "check",
+        "field": "journaled",
+        "color": "#6610f2",
+        "met": lambda v: v is True,
+    },
+    {
+        "key": "sleep", "name": "Sleep 7h+", "label": "Sleep hours",
+        "field": "sleep_hours", "unit": "hours",
+        "min": 0, "max": 24, "step": 0.5, "cast": float,
+        "color": "#198754", "met": lambda v: v >= 7,
+    },
+    {
+        "key": "disruptions", "name": "Disruptions 2 or fewer", "label": "Disruptions",
+        "field": "disruptions", "unit": "meetings or interruptions",
+        "min": 0, "max": 20, "step": 1, "cast": int,
+        "color": "#fd7e14", "met": lambda v: v <= 2,
+    },
+    {
+        "key": "junk", "name": "No junk food", "label": "Junk food",
+        "field": "junk_food", "type": "choice",
+        "choices": [(0, "No junk food today"), (1, "Had junk food")],
+        "cast": int,
+        "color": "#dc3545", "met": lambda v: v == 0,
+    },
+]
+
+# ------------------------- context inputs (no goal) -------------------------
+CONTEXT = [
+    {
+        "key": "free_hours", "name": "Free hours", "label": "Free hours available",
+        "field": "free_hours", "unit": "hours free for work",
+        "min": 0, "max": 24, "step": 0.5, "cast": float,
+        "color": "#adb5bd",
+    },
+    {
+        "key": "difficulty", "name": "Task difficulty", "label": "Task difficulty",
+        "field": "task_difficulty", "type": "choice",
+        "choices": [(1, "1 - Very easy"), (2, "2 - Easy"), (3, "3 - Medium"),
+                    (4, "4 - Hard"), (5, "5 - Very hard")],
+        "cast": int, "color": "#adb5bd",
+    },
+    {
+        "key": "day_type", "name": "Day type", "label": "Day type",
+        "field": "day_type", "type": "choice",
+        "choices": [("class", "Class day"), ("free", "Free day"),
+                    ("deadline", "Exam or deadline day")],
+        "cast": str, "color": "#adb5bd",
+    },
+    {
+        "key": "weather", "name": "Weather", "label": "Weather",
+        "field": "weather", "type": "choice",
+        "choices": [("sunny", "Sunny"), ("cloudy", "Cloudy"), ("rainy", "Rainy")],
+        "cast": str, "color": "#adb5bd",
+    },
+]
+
+# Everything the /habit/<key> log page can open.
+BY_KEY = {h["key"]: h for h in HABITS + CONTEXT}
+
+# ML feature name (as in ml/dummydataset.py) -> log field in the database.
+# Features not listed here are computed: log_streak, deep_work_days_prev7.
+ML_FIELDS = {
+    "deep_work": "study_hours",
+    "sleep_hours": "sleep_hours",
+    "caffeine_level": "caffeine_mg",
+    "stress_level": "stress_level",
+    "journaled": "journaled",
+    "disruptions": "disruptions",
+    "junk_food": "junk_food",
+    "task_difficulty": "task_difficulty",
+    "free_hours": "free_hours",
+    "day_type": "day_type",
+    "weather": "weather",
+}
+
+
+# ------------------------------ goal logic ----------------------------------
+def is_met(habit, log):
+    """True = goal met, False = logged but not met, None = no data."""
+    value = getattr(log, habit["field"], None)
+    return None if value is None else bool(habit["met"](value))
+
+
+def goals_met(log):
+    return sum(1 for h in HABITS if is_met(h, log))
+
+
+def has_data(log):
+    """True if at least one goal habit was logged on this day."""
+    return log is not None and any(is_met(h, log) is not None for h in HABITS)
+
+
+def level(log):
+    """0 = no data, 1-4 = share of goals met (4 = full day)."""
+    states = [is_met(h, log) for h in HABITS]
+    if all(s is None for s in states):
+        return 0
+    frac = sum(1 for s in states if s) / len(HABITS)
+    return 4 if frac == 1 else 3 if frac >= 0.7 else 2 if frac >= 0.4 else 1
+
+
+# --------------------------- computed ML features ---------------------------
+# logs_by_date: dict of date -> log row for one user.
+def log_streak(logs_by_date, today, cap=STREAK_CAP):
+    """Consecutive logged days ending YESTERDAY (today is excluded), capped."""
+    n, day = 0, today - timedelta(days=1)
+    while n < cap and has_data(logs_by_date.get(day)):
+        n += 1
+        day -= timedelta(days=1)
+    return n
+
+
+def deep_work_days_prev7(logs_by_date, today):
+    """How many of the previous 7 days (today excluded) met the deep work goal."""
+    study = BY_KEY["study"]
+    return sum(
+        1 for i in range(1, 8)
+        if logs_by_date.get(today - timedelta(days=i)) is not None
+        and is_met(study, logs_by_date[today - timedelta(days=i)]) is True
+    )
+
+===== app/insights/__init__.py =====
+
+from flask import Blueprint
+
+bp = Blueprint("insights", __name__, url_prefix="/insights")
+
+from app.insights import routes  # noqa: E402,F401  (import last to avoid a circular import)
+
+===== app/insights/insights_routes.py =====
+
+"""ML Insights pages.
+
+    /insights/            "Try your own numbers": type a day, see the estimate
+    /insights/log/<id>    "Details": the estimate for one of YOUR logged days
+
+Both use the same 13 model inputs as the home-page card (ml/settings.py
+FEATURES). Nothing here trains or changes a model; it only calls predict_day.
+"""
+from datetime import timedelta
+
+from flask import abort, flash, render_template, request
+from flask_login import current_user, login_required
+
+# Same Blueprint object that app/insights/__init__.py creates and registers.
+# (Aliased to `insights`, so both `from app.insights import bp` and
+# `from app.insights.routes import insights` keep working.)
+from app.insights import bp as insights
+from app.insights.service import HISTORY_DAYS, LABELS, _inputs
+from app.models import ProductivityLog
+from ml.predict import (ModelsNotTrainedError, data_stage, model_info,
+                        predict_day)
+from ml.settings import FEATURES
+
+# label, min, max, step, default for the "try your own numbers" form.
+# Only used for the form's hints; predict_day does the real validation.
+NUMBER_SPEC = {
+    "deep_work": ("Deep work (hours)", 0, 24, 0.5, 3),
+    "sleep_hours": ("Sleep (hours)", 0, 24, 0.5, 7),
+    "caffeine_level": ("Caffeine level (0-10)", 0, 10, 1, 2),
+    "stress_level": ("Stress (1-10)", 1, 10, 1, 5),
+    "log_streak": ("Days logged in a row (0-14)", 0, 14, 1, 3),
+    "disruptions": ("Disruptions", 0, 20, 1, 1),
+    "task_difficulty": ("Task difficulty (1-5)", 1, 5, 1, 3),
+    "deep_work_days_prev7": ("Deep-work goal days, last 7 (0-7)", 0, 7, 1, 3),
+    "free_hours": ("Free hours", 0, 24, 0.5, 5),
+}
+CHECK_SPEC = {"journaled": "Journaled today", "junk_food": "Had junk food"}
+SELECT_SPEC = {"day_type": "Day type", "weather": "Weather"}
+
+# Friendly names for the details page (service.LABELS lacks the last three)
+NAMES = {**LABELS, "journaled": "Journaling", "log_streak": "Days logged in a row",
+         "deep_work_days_prev7": "Deep-work goal days (last 7)"}
+
+
+def _pretty(name):
+    return NAMES.get(name) or name.replace("_", " ").capitalize()
+
+
+def _categories():
+    """(categories dict, models_trained). Categories come from training."""
+    try:
+        return model_info().get("categories", {}), True
+    except ModelsNotTrainedError:
+        return {}, False
+
+
+def _fields(values, categories):
+    """Form fields in FEATURES order, pre-filled from `values`."""
+    fields = []
+    for name in FEATURES:
+        if name in SELECT_SPEC:
+            options = categories.get(name, [])
+            fields.append({"name": name, "kind": "select",
+                           "label": SELECT_SPEC[name], "options": options,
+                           "value": values.get(name, options[0] if options else "")})
+        elif name in CHECK_SPEC:
+            fields.append({"name": name, "kind": "check",
+                           "label": CHECK_SPEC[name],
+                           "value": bool(values.get(name, 0))})
+        else:
+            label, lo, hi, step, default = NUMBER_SPEC.get(
+                name, (_pretty(name), None, None, "any", 0))
+            fields.append({"name": name, "kind": "number", "label": label,
+                           "min": lo, "max": hi, "step": step,
+                           "value": values.get(name, default)})
+    return fields
+
+
+def _read_form():
+    """Raw values from the submitted form (predict_day validates them)."""
+    values = {}
+    for name in FEATURES:
+        if name in CHECK_SPEC:
+            values[name] = 1 if request.form.get(name) else 0
+        else:
+            values[name] = (request.form.get(name) or "").strip()
+    return values
+
+
+def _check_numbers(values):
+    """First problem in the typed numbers as (field, message), else None.
+
+    Friendly wording for the form. predict_day re-checks everything too.
+    """
+    for name in FEATURES:
+        if name not in NUMBER_SPEC:
+            continue
+        label, lo, hi, _step, _default = NUMBER_SPEC[name]
+        short = label.split(" (")[0]
+        try:
+            number = float(values[name])
+        except (TypeError, ValueError):
+            return name, f"{short}: enter a number."
+        if number != number or not lo <= number <= hi:      # NaN fails too
+            return name, f"{short} must be between {lo:g} and {hi:g}."
+    return None
+
+
+@insights.route("/", methods=["GET", "POST"])
+@login_required
+def index():
+    categories, trained = _categories()
+    values, result, error, error_field = {}, None, None, None
+
+    if request.method == "POST":
+        values = _read_form()
+        problem = _check_numbers(values)
+        if problem:
+            error_field, error = problem
+        else:
+            try:
+                result = predict_day(values)
+            except ModelsNotTrainedError:
+                trained = False
+            except ValueError as exc:
+                error = str(exc)
+
+    n_logs = ProductivityLog.query.filter_by(user_id=current_user.id).count()
+    return render_template(
+        "insights/index.html", fields=_fields(values, categories),
+        trained=trained, result=result, error=error, error_field=error_field,
+        n_logs=n_logs, stage=data_stage(n_logs))
+
+
+@insights.route("/log/<int:log_id>")
+@login_required
+def estimate_log(log_id):
+    from app.habits import deep_work_days_prev7, log_streak
+
+    # Only the owner may open a log (404 for anyone else's id)
+    log = ProductivityLog.query.filter_by(
+        id=log_id, user_id=current_user.id).first_or_404()
+
+    since = log.log_date - timedelta(days=HISTORY_DAYS)
+    history = ProductivityLog.query.filter(
+        ProductivityLog.user_id == current_user.id,
+        ProductivityLog.log_date >= since,
+        ProductivityLog.log_date <= log.log_date).all()
+    by_date = {r.log_date: r for r in history}
+
+    values, missing = _inputs(log, by_date, log_streak, deep_work_days_prev7)
+    ctx = {"log": log, "result": None, "message": None,
+           "rows": [], "drivers": []}
+
+    if missing:
+        ctx["message"] = ("This day can't be estimated yet. Still missing: "
+                          + ", ".join(_pretty(f) for f in missing) + ".")
+        return render_template("insights/estimate.html", **ctx)
+
+    try:
+        ctx["result"] = predict_day(values)
+        info = model_info()
+    except ModelsNotTrainedError:
+        ctx["message"] = "Models not trained yet. Run: python -m ml.train"
+        return render_template("insights/estimate.html", **ctx)
+    except ValueError as exc:
+        ctx["message"] = str(exc)
+        return render_template("insights/estimate.html", **ctx)
+
+    ctx["rows"] = [(_pretty(f), values[f]) for f in FEATURES]
+    importance = (info.get("feature_importance") or {}).get("regressor") or {}
+    ctx["drivers"] = [(_pretty(k), round(v * 100))
+                      for k, v in list(importance.items())[:5]]
+    return render_template("insights/estimate.html", **ctx)
+
+===== app/insights/routes.py =====
+
+"""ML Insights pages.
+
+    /insights/            "Try your own numbers": type a day, see the estimate
+    /insights/log/<id>    "Details": the estimate for one of YOUR logged days
+
+Both use the same 13 model inputs as the home-page card (ml/settings.py
+FEATURES). Nothing here trains or changes a model; it only calls predict_day.
+"""
+from datetime import timedelta
+
+from flask import abort, flash, render_template, request
+from flask_login import current_user, login_required
+
+# Same Blueprint object that app/insights/__init__.py creates and registers.
+# (Aliased to `insights`, so both `from app.insights import bp` and
+# `from app.insights.routes import insights` keep working.)
+from app.insights import bp as insights
+from app.insights.service import HISTORY_DAYS, LABELS, _inputs
+from app.models import ProductivityLog
+from ml.predict import (ModelsNotTrainedError, data_stage, model_info,
+                        predict_day)
+from ml.settings import FEATURES
+
+# label, min, max, step, default for the "try your own numbers" form.
+# Only used for the form's hints; predict_day does the real validation.
+NUMBER_SPEC = {
+    "deep_work": ("Deep work (hours)", 0, 24, 0.5, 3),
+    "sleep_hours": ("Sleep (hours)", 0, 24, 0.5, 7),
+    "caffeine_level": ("Caffeine level (0-10)", 0, 10, 1, 2),
+    "stress_level": ("Stress (1-10)", 1, 10, 1, 5),
+    "log_streak": ("Days logged in a row (0-14)", 0, 14, 1, 3),
+    "disruptions": ("Disruptions", 0, 20, 1, 1),
+    "task_difficulty": ("Task difficulty (1-5)", 1, 5, 1, 3),
+    "deep_work_days_prev7": ("Deep-work goal days, last 7 (0-7)", 0, 7, 1, 3),
+    "free_hours": ("Free hours", 0, 24, 0.5, 5),
+}
+CHECK_SPEC = {"journaled": "Journaled today", "junk_food": "Had junk food"}
+SELECT_SPEC = {"day_type": "Day type", "weather": "Weather"}
+
+# Friendly names for the details page (service.LABELS lacks the last three)
+NAMES = {**LABELS, "journaled": "Journaling", "log_streak": "Days logged in a row",
+         "deep_work_days_prev7": "Deep-work goal days (last 7)"}
+
+
+def _pretty(name):
+    return NAMES.get(name) or name.replace("_", " ").capitalize()
+
+
+def _categories():
+    """(categories dict, models_trained). Categories come from training."""
+    try:
+        return model_info().get("categories", {}), True
+    except ModelsNotTrainedError:
+        return {}, False
+
+
+def _fields(values, categories):
+    """Form fields in FEATURES order, pre-filled from `values`."""
+    fields = []
+    for name in FEATURES:
+        if name in SELECT_SPEC:
+            options = categories.get(name, [])
+            fields.append({"name": name, "kind": "select",
+                           "label": SELECT_SPEC[name], "options": options,
+                           "value": values.get(name, options[0] if options else "")})
+        elif name in CHECK_SPEC:
+            fields.append({"name": name, "kind": "check",
+                           "label": CHECK_SPEC[name],
+                           "value": bool(values.get(name, 0))})
+        else:
+            label, lo, hi, step, default = NUMBER_SPEC.get(
+                name, (_pretty(name), None, None, "any", 0))
+            fields.append({"name": name, "kind": "number", "label": label,
+                           "min": lo, "max": hi, "step": step,
+                           "value": values.get(name, default)})
+    return fields
+
+
+def _read_form():
+    """Raw values from the submitted form (predict_day validates them)."""
+    values = {}
+    for name in FEATURES:
+        if name in CHECK_SPEC:
+            values[name] = 1 if request.form.get(name) else 0
+        else:
+            values[name] = (request.form.get(name) or "").strip()
+    return values
+
+
+@insights.route("/", methods=["GET", "POST"])
+@login_required
+def index():
+    categories, trained = _categories()
+    values, result, error = {}, None, None
+
+    if request.method == "POST":
+        values = _read_form()
+        try:
+            result = predict_day(values)
+        except ModelsNotTrainedError:
+            trained = False
+        except ValueError as exc:
+            error = str(exc)
+
+    n_logs = ProductivityLog.query.filter_by(user_id=current_user.id).count()
+    return render_template(
+        "insights/index.html", fields=_fields(values, categories),
+        trained=trained, result=result, error=error,
+        n_logs=n_logs, stage=data_stage(n_logs))
+
+
+@insights.route("/log/<int:log_id>")
+@login_required
+def estimate_log(log_id):
+    from app.habits import deep_work_days_prev7, log_streak
+
+    # Only the owner may open a log (404 for anyone else's id)
+    log = ProductivityLog.query.filter_by(
+        id=log_id, user_id=current_user.id).first_or_404()
+
+    since = log.log_date - timedelta(days=HISTORY_DAYS)
+    history = ProductivityLog.query.filter(
+        ProductivityLog.user_id == current_user.id,
+        ProductivityLog.log_date >= since,
+        ProductivityLog.log_date <= log.log_date).all()
+    by_date = {r.log_date: r for r in history}
+
+    values, missing = _inputs(log, by_date, log_streak, deep_work_days_prev7)
+    ctx = {"log": log, "result": None, "message": None,
+           "rows": [], "drivers": []}
+
+    if missing:
+        ctx["message"] = ("This day can't be estimated yet. Still missing: "
+                          + ", ".join(_pretty(f) for f in missing) + ".")
+        return render_template("insights/estimate.html", **ctx)
+
+    try:
+        ctx["result"] = predict_day(values)
+        info = model_info()
+    except ModelsNotTrainedError:
+        ctx["message"] = "Models not trained yet. Run: python -m ml.train"
+        return render_template("insights/estimate.html", **ctx)
+    except ValueError as exc:
+        ctx["message"] = str(exc)
+        return render_template("insights/estimate.html", **ctx)
+
+    ctx["rows"] = [(_pretty(f), values[f]) for f in FEATURES]
+    importance = (info.get("feature_importance") or {}).get("regressor") or {}
+    ctx["drivers"] = [(_pretty(k), round(v * 100))
+                      for k, v in list(importance.items())[:5]]
+    return render_template("insights/estimate.html", **ctx)
+
+===== app/insights/service.py =====
+
+"""Small helper so other pages (like the home page) can show an ML estimate.
+
+    from app.insights.service import latest_estimate
+    data["estimate"] = latest_estimate(current_user.id)
+
+Returns one of:
+    None                                  models not trained, or something broke
+                                          (the template then hides the card)
+    {"status": "no_log"}                  no log in the last month
+    {"status": "incomplete", "message"}   a log exists but inputs are missing;
+                                          the message names them
+    {"status": "ok", "score", "level", "error", "log_id", "log_date",
+                 plus what the home card shows: "range_lo"/"range_hi" (score +-
+                 typical error), "probs" (chance of each level), "low_below"/
+                 "high_from" (level cut-offs), "levers" (biggest what-ifs),
+                 "source" ("today's log", "yesterday's log", ...)}
+
+How the inputs are built
+    The model's inputs are named like the DATASET (ml/settings.py FEATURES),
+    but the app stores them under different names, so DB_FIELDS maps one to the
+    other (deep_work lives in study_hours, caffeine_level in caffeine_mg, ...).
+    Two inputs are not stored at all; they are computed from the days before
+    the one being estimated (app.habits):
+        log_streak            consecutive logged days ending the day before
+        deep_work_days_prev7  how many of the previous 7 days met the goal
+
+How the log is chosen
+    Logs are created one habit at a time, so today's row is often half empty.
+    This looks at the newest 14 logs (last ~month) and uses the newest one that
+    has every input. If none is complete, the message names what the NEWEST
+    log is missing, so the user knows what to log next. A check habit
+    (journaled) that is None means "not done", so it counts as 0. A dropdown
+    habit that is None (junk food, day type, weather, ...) is really missing.
+
+Design rule: an EXPERIMENTAL feature must never be able to break the home page,
+so every failure is caught here and logged instead of raised.
+"""
+from datetime import date, timedelta
+
+from flask import current_app
+
+from ml.predict import ModelsNotTrainedError, predict_day, suggest_levers
+from ml.settings import FEATURES, LEVELS, LEVEL_BINS
+
+# dataset feature name -> ProductivityLog column
+DB_FIELDS = {
+    "deep_work": "study_hours",
+    "sleep_hours": "sleep_hours",
+    "caffeine_level": "caffeine_mg",       # stores the 0-10 LEVEL, not mg
+    "stress_level": "stress_level",
+    "journaled": "journaled",
+    "disruptions": "disruptions",
+    "junk_food": "junk_food",
+    "task_difficulty": "task_difficulty",
+    "day_type": "day_type",
+    "weather": "weather",
+    "free_hours": "free_hours",
+}
+COMPUTED = ("log_streak", "deep_work_days_prev7")
+CHECK_FEATURES = ("journaled",)            # None means "not done"
+
+LABELS = {
+    "deep_work": "Deep work", "sleep_hours": "Sleep",
+    "caffeine_level": "Caffeine", "stress_level": "Stress",
+    "disruptions": "Disruptions", "junk_food": "Junk food",
+    "task_difficulty": "Task difficulty", "day_type": "Day type",
+    "weather": "Weather", "free_hours": "Free hours",
+}
+
+RECENT_LOGS = 14
+HISTORY_DAYS = 32      # enough to compute a 14-day streak for a 14-day-old log
+
+
+def _inputs(log, by_date, log_streak, deep_work_days_prev7):
+    """Return (values, missing) for one log row."""
+    values, missing = {}, []
+    for f in FEATURES:
+        if f == "log_streak":
+            values[f] = log_streak(by_date, log.log_date)
+        elif f == "deep_work_days_prev7":
+            values[f] = deep_work_days_prev7(by_date, log.log_date)
+        else:
+            v = getattr(log, DB_FIELDS[f], None)
+            if f in CHECK_FEATURES:
+                v = 1 if v else 0
+            if v is None:
+                missing.append(f)
+                continue
+            values[f] = int(v) if isinstance(v, bool) else v
+    return values, missing
+
+
+def _missing_message(log, missing):
+    names = ", ".join(LABELS.get(f, f) for f in missing)
+    if log.log_date == date.today():
+        return f"To estimate today, still log: {names}."
+    return (f"Your latest log ({log.log_date.isoformat()}) is missing: "
+            f"{names}. Log them to get an estimate.")
+
+
+def _source(d):
+    today = date.today()
+    if d == today:
+        return "today's log"
+    if d == today - timedelta(days=1):
+        return "yesterday's log"
+    return f"your log from {d.isoformat()}"
+
+
+def _ok(log, values, result):
+    """Everything the home-page card shows for a complete day."""
+    score = result["predicted_score"]
+    err = result["typical_error_points"]
+    d = log.log_date
+    try:
+        levers = suggest_levers(values)
+    except Exception:                       # the extras must never break the card
+        current_app.logger.exception("ML levers failed")
+        levers = []
+    probs = result.get("level_probabilities", {})
+    return {
+        "status": "ok",
+        "score": score,
+        "level": result["predicted_level"],
+        "error": round(err, 1) if err else None,
+        "range_lo": round(max(0.0, score - err), 1) if err else None,
+        "range_hi": round(min(100.0, score + err), 1) if err else None,
+        "probs": [{"level": lvl, "pct": round(probs.get(lvl, 0) * 100)}
+                  for lvl in LEVELS],
+        "low_below": LEVEL_BINS[1],
+        "high_from": LEVEL_BINS[2],
+        "levers": levers,
+        "source": _source(d),
+        "log_id": log.id,
+        "log_date": d.isoformat() if hasattr(d, "isoformat") else str(d),
+    }
+
+
+def latest_estimate(user_id: int):
+    try:
+        from app.habits import deep_work_days_prev7, log_streak
+        from app.models import ProductivityLog   # here to avoid import cycles
+
+        unknown = [f for f in FEATURES
+                   if f not in DB_FIELDS and f not in COMPUTED]
+        if unknown:
+            return {"status": "incomplete",
+                    "message": "The app does not know how to build: "
+                               + ", ".join(unknown) + " (see DB_FIELDS in "
+                               "app/insights/service.py)."}
+        absent = sorted({DB_FIELDS[f] for f in FEATURES if f in DB_FIELDS
+                         and not hasattr(ProductivityLog, DB_FIELDS[f])})
+        if absent:
+            return {"status": "incomplete",
+                    "message": "The log table has no column named: "
+                               + ", ".join(absent) + "."}
+
+        since = date.today() - timedelta(days=HISTORY_DAYS)
+        rows = (ProductivityLog.query
+                .filter(ProductivityLog.user_id == user_id,
+                        ProductivityLog.log_date >= since)
+                .order_by(ProductivityLog.log_date.desc())
+                .all())
+        if not rows:
+            return {"status": "no_log"}
+        by_date = {r.log_date: r for r in rows}
+
+        newest_missing = None
+        for log in rows[:RECENT_LOGS]:
+            values, missing = _inputs(log, by_date, log_streak,
+                                      deep_work_days_prev7)
+            if missing:
+                if newest_missing is None:
+                    newest_missing = (log, missing)
+                continue
+            result = predict_day(values)
+            return _ok(log, values, result)
+
+        log, missing = newest_missing
+        return {"status": "incomplete", "message": _missing_message(log, missing)}
+    except ModelsNotTrainedError:
+        return None
+    except ValueError as exc:                    # value outside the model's range
+        return {"status": "incomplete", "message": str(exc)}
+    except Exception:                            # never break the home page
+        current_app.logger.exception("ML estimate failed")
+        return None
+
+===== app/main/__init__.py =====
+
+
+===== app/main/forms.py =====
+
+from datetime import date
+
+from flask_wtf import FlaskForm
+from wtforms import DateField, FloatField, SubmitField
+from wtforms.validators import InputRequired, ValidationError
+
+
+def _check_date(field):
+    if field.data > date.today():
+        raise ValidationError("Date cannot be in the future.")
+    if field.data.year < 2020:
+        raise ValidationError("Date is too far in the past.")
+
+
+class HabitForm(FlaskForm):
+    """One habit value for one day. The range check happens in the route."""
+    log_date = DateField("Date", default=date.today, validators=[InputRequired()])
+    value = FloatField("Value", validators=[InputRequired()])
+    submit = SubmitField("Save")
+
+    def validate_log_date(self, field):
+        _check_date(field)
+
+===== app/main/routes.py =====
+
+from datetime import date, datetime, timedelta
+from types import SimpleNamespace
+
+from flask import (Blueprint, abort, flash, jsonify, redirect,
+                   render_template, request, url_for)
+from flask_login import current_user, login_required
+from flask_wtf import FlaskForm
+from wtforms import DateField, FloatField, SelectField, SubmitField
+from wtforms.validators import InputRequired
+
+from app.extensions import db
+from app.habits import BY_KEY, CONTEXT, HABITS, goals_met, is_met, level
+from app.insights.service import latest_estimate
+from app.models import ProductivityLog
+from app.stats import dashboard_stats
+
+main_bp = Blueprint("main", __name__)
+
+# ---------------------------------------------------------------- log forms
+class NumberHabitForm(FlaskForm):
+    """Log page for number habits (sleep, deep work, stress, ...)."""
+    log_date = DateField("Date", default=date.today, validators=[InputRequired()])
+    value = FloatField("Value", validators=[InputRequired()])
+    submit = SubmitField("Save")
+
+
+class ChoiceHabitForm(FlaskForm):
+    """Log page for dropdown habits (caffeine, junk food, day type, ...).
+
+    The allowed choices are set per habit in the route, and WTForms rejects
+    any posted value that is not one of them.
+    """
+    log_date = DateField("Date", default=date.today, validators=[InputRequired()])
+    value = SelectField("Value", choices=[], coerce=str,
+                        validators=[InputRequired()])
+    submit = SubmitField("Save")
+
+
+def _is_choice(habit):
+    return habit.get("type") == "choice" or bool(habit.get("choices"))
+
+
+def _get_log(user_id, log_date, create=False):
+    log = ProductivityLog.query.filter_by(user_id=user_id, log_date=log_date).first()
+    if log is None and create:
+        log = ProductivityLog(user_id=user_id, log_date=log_date)
+        db.session.add(log)
+    return log
+
+
+def _choice_label(habit, value):
+    for v, label in habit.get("choices", []):
+        if str(v) == str(value):
+            return label
+    return None
+
+
+# ---------------------------------------------------------------- dashboard
+def build_dashboard(user):
+    today = date.today()
+
+    # Heatmap starts on a Sunday, about one year back
+    start = today - timedelta(days=363)
+    start -= timedelta(days=(start.weekday() + 1) % 7)
+
+    logs = ProductivityLog.query.filter(
+        ProductivityLog.user_id == user.id,
+        ProductivityLog.log_date >= start,
+    ).all()
+    by_date = {l.log_date: l for l in logs}
+
+    weeks, d = [], start
+    while d <= today:
+        week = []
+        for _ in range(7):
+            if d > today:
+                week.append(None)
+            else:
+                log = by_date.get(d)
+                lvl = level(log) if log else 0
+                tip = (f"{d.isoformat()}: {goals_met(log)}/{len(HABITS)} goals"
+                       if lvl else f"{d.isoformat()}: no data")
+                week.append({
+                    "date": d.isoformat(), "level": lvl, "logged": lvl > 0,
+                    "today": d == today, "tip": tip,
+                })
+            d += timedelta(days=1)
+        weeks.append(week)
+
+    labels, prev = [], None
+    for w in weeks:
+        month = date.fromisoformat(w[0]["date"]).strftime("%b")
+        labels.append(month if month != prev else "")
+        prev = month
+
+    # This week, Monday to Sunday
+    monday = today - timedelta(days=today.weekday())
+    week_dates = [monday + timedelta(days=i) for i in range(7)]
+    today_log = by_date.get(today)
+
+    habits = []
+    for h in HABITS:
+        days = []
+        for wd in week_dates:
+            if wd > today or wd not in by_date:
+                days.append(None)                     # future or no data
+            else:
+                days.append(is_met(h, by_date[wd]))   # True / False / None
+        habits.append({
+            "key": h["key"], "name": h["name"], "color": h["color"],
+            "type": h.get("type", "number"),
+            "days": days, "done": sum(1 for x in days if x),
+            "value": getattr(today_log, h["field"], None) if today_log else None,
+        })
+
+    # Context inputs (no goal): today's value or None
+    context = []
+    for c in CONTEXT:
+        raw = getattr(today_log, c["field"], None) if today_log else None
+        shown = None
+        if raw is not None:
+            shown = _choice_label(c, raw) or str(raw)
+        context.append({"key": c["key"], "name": c["name"],
+                        "color": c.get("color", "#6c757d"),
+                        "value": raw, "shown": shown})
+
+    elapsed = today.weekday() + 1
+    percent = round(sum(h["done"] for h in habits) / (len(HABITS) * elapsed) * 100)
+
+    hour = datetime.now().hour
+    greeting = "Good morning" if hour < 12 else "Good afternoon" if hour < 18 else "Good evening"
+
+    return {
+        "greeting": greeting,
+        "today_label": today.strftime("%a, %b %d"),
+        "weeks": weeks,
+        "month_labels": labels,
+        "habits": habits,
+        "context": context,
+        "percent": percent,
+        "today_index": today.weekday(),
+        "today_logged": today_log is not None and level(today_log) > 0,
+        "total_logs": sum(1 for l in logs if level(l) > 0),
+    }
+
+
+@main_bp.route("/")
+def index():
+    data = None
+    if current_user.is_authenticated:
+        data = build_dashboard(current_user)
+        data["estimate"] = latest_estimate(current_user.id)
+    return render_template("index.html", data=data)
+
+
+@main_bp.route("/dashboard")
+@login_required
+def dashboard():
+    return render_template("dashboard.html", stats=dashboard_stats(current_user))
+
+
+@main_bp.route("/api/dashboard")
+@login_required
+def api_dashboard():
+    return jsonify(dashboard_stats(current_user))
+
+
+
+# ---------------------------------------------------------- log-page helpers
+# Quick-pick values shown as chips on the log page, by habit key. Anything not
+# listed falls back to the full grid when it is short (<= 12 values).
+PRESETS = {
+    "study": [0, 1, 2, 3, 4, 5, 6],
+    "sleep": [5, 6, 6.5, 7, 7.5, 8, 9],
+    "disruptions": [0, 1, 2, 3, 4, 5],
+    "free_hours": [0, 1, 2, 4, 6, 8, 10],
+    "stress": list(range(1, 11)),
+    "sessions": [0, 1, 2, 3, 4, 5, 6],
+}
+CHIP_LIMIT = 6            # dropdown habits with more choices keep a <select>
+
+
+def _goal(habit, value):
+    """True / False if `value` meets the habit's goal, None if it has no goal.
+
+    Uses the app's own is_met(), so it works whatever shape HABITS has.
+    """
+    try:
+        return is_met(habit, SimpleNamespace(**{habit["field"]: value}))
+    except Exception:
+        return None
+
+
+def _date_arg():
+    """?date=YYYY-MM-DD for the log page (today if missing, bad or future)."""
+    raw = request.args.get("date")
+    try:
+        chosen = date.fromisoformat(raw) if raw else date.today()
+    except ValueError:
+        chosen = date.today()
+    return min(chosen, date.today())
+
+
+def _grid(habit):
+    lo, hi = habit.get("min"), habit.get("max")
+    if lo is None or hi is None:
+        return []
+    step = habit.get("step") or 1
+    n = min(int(round((hi - lo) / step)) + 1, 400)
+    return [round(lo + i * step, 6) for i in range(n)]
+
+
+def _log_page_context(habit, choice, chosen, existing_value):
+    """Extra data the log page needs: presets, goal table, current value."""
+    ctx = {
+        "chosen_iso": chosen.isoformat(),
+        "today_iso": date.today().isoformat(),
+        "yesterday_iso": (date.today() - timedelta(days=1)).isoformat(),
+        "chosen_is_today": chosen == date.today(),
+        "chip_limit": CHIP_LIMIT,
+        "presets": [], "goal_points": [], "has_goal": False, "choice_ok": {},
+        "current_value": existing_value, "current_label": None,
+    }
+    if existing_value is not None:
+        if choice:
+            ctx["current_label"] = _choice_label(habit, existing_value) or str(existing_value)
+        else:
+            ctx["current_label"] = f"{existing_value:g} {habit.get('unit', '')}".strip()
+
+    if choice:
+        ctx["choice_ok"] = {str(v): _goal(habit, v)
+                            for v, _ in habit.get("choices", [])}
+        ctx["has_goal"] = any(ok is not None for ok in ctx["choice_ok"].values())
+        return ctx
+
+    grid = _grid(habit)
+    points = [(v, _goal(habit, v)) for v in grid]
+    ctx["has_goal"] = any(ok is not None for _, ok in points)
+    if ctx["has_goal"]:
+        ctx["goal_points"] = [[v, bool(ok)] for v, ok in points if ok is not None]
+    wanted = PRESETS.get(habit["key"]) or (grid if len(grid) <= 12 else [])
+    lo, hi = habit.get("min"), habit.get("max")
+    ctx["presets"] = [{"value": v, "ok": _goal(habit, v)} for v in wanted
+                      if (lo is None or v >= lo) and (hi is None or v <= hi)]
+    return ctx
+
+# ---------------------------------------------------------------- log a habit
+@main_bp.route("/habit/<key>", methods=["GET", "POST"])
+@login_required
+def log_habit(key):
+    habit = BY_KEY.get(key)
+    if habit is None or habit.get("type") == "check":
+        abort(404)
+
+    choice = _is_choice(habit)
+    form = ChoiceHabitForm() if choice else NumberHabitForm()
+    if choice:
+        form.value.choices = [(str(v), label) for v, label in habit["choices"]]
+
+    chosen = _date_arg() if request.method == "GET" else (
+        form.log_date.data or date.today())
+    existing_value = None
+    if request.method == "GET":
+        form.log_date.data = chosen
+        existing = _get_log(current_user.id, chosen)
+        existing_value = getattr(existing, habit["field"], None) if existing else None
+        if existing_value is not None:
+            form.value.data = str(existing_value) if choice else existing_value
+    elif form.log_date.data:
+        existing = _get_log(current_user.id, form.log_date.data)
+        existing_value = getattr(existing, habit["field"], None) if existing else None
+
+    if form.validate_on_submit():
+        lo, hi = habit.get("min"), habit.get("max")
+        if form.log_date.data > date.today():
+            form.log_date.errors.append("Date can't be in the future.")
+        elif not choice and lo is not None and hi is not None \
+                and not lo <= form.value.data <= hi:
+            form.value.errors.append(f"Enter a value from {lo:g} to {hi:g}.")
+        else:
+            try:
+                stored = habit["cast"](form.value.data)
+            except (TypeError, ValueError):
+                form.value.errors.append("That value isn't valid.")
+                stored = None
+            if stored is not None:
+                log = _get_log(current_user.id, form.log_date.data, create=True)
+                setattr(log, habit["field"], stored)
+                db.session.commit()
+
+                if choice:
+                    shown = _choice_label(habit, form.value.data) or form.value.data
+                else:
+                    shown = f"{form.value.data:g} {habit.get('unit', '')}".strip()
+
+                met = is_met(habit, log) if _goal(habit, stored) is not None else None
+                if met is None:                           # context inputs: no goal
+                    flash(f"{habit['name']} saved: {shown}.", "success")
+                else:
+                    flash(f"{habit['name']}: "
+                          f"{'goal met' if met else 'goal not met'} ({shown}).",
+                          "success" if met else "info")
+                return redirect(url_for("main.index"))
+
+    ctx = _log_page_context(habit, choice, chosen, existing_value)
+    return render_template("habit_form.html", form=form, habit=habit, **ctx)
+
+
+@main_bp.route("/habit/<key>/toggle", methods=["POST"])
+@login_required
+def toggle_habit(key):
+    habit = BY_KEY.get(key)
+    if habit is None or habit.get("type") != "check":
+        abort(404)
+
+    log = _get_log(current_user.id, date.today(), create=True)
+    current = getattr(log, habit["field"])
+    setattr(log, habit["field"], None if current else True)
+    db.session.commit()
+    return redirect(url_for("main.index"))
+
+
+@main_bp.route("/profile")
+@login_required
+def profile():
+    total = ProductivityLog.query.filter_by(user_id=current_user.id).count()
+    return render_template("profile.html", total_logs=total)
+
+===== app/models.py =====
+
+from datetime import date, datetime, timezone
+
+from flask_login import UserMixin
+from werkzeug.security import generate_password_hash, check_password_hash
+
+from app.extensions import db, login_manager
+
+
+class User(UserMixin, db.Model):
+    __tablename__ = "users"
+
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(50), unique=True, nullable=False)
+    email = db.Column(db.String(120), unique=True, nullable=False)
+    password_hash = db.Column(db.String(255), nullable=False)
+    created_at = db.Column(
+        db.DateTime, default=lambda: datetime.now(timezone.utc), nullable=False
+    )
+
+    def set_password(self, password):
+        self.password_hash = generate_password_hash(password)
+
+    def check_password(self, password):
+        return check_password_hash(self.password_hash, password)
+
+
+class ProductivityLog(db.Model):
+    __tablename__ = "productivity_logs"
+    __table_args__ = (db.UniqueConstraint("user_id", "log_date", name="uq_user_date"),)
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    log_date = db.Column(db.Date, nullable=False, default=date.today)
+
+    # Original habits (study_hours stores deep work hours, caffeine_mg stores a 0-10 level)
+    study_hours = db.Column(db.Float, nullable=True)
+    sleep_hours = db.Column(db.Float, nullable=True)
+    caffeine_mg = db.Column(db.Integer, nullable=True)
+    stress_level = db.Column(db.Integer, nullable=True)
+    study_sessions = db.Column(db.Integer, nullable=True)
+    journaled = db.Column(db.Boolean, nullable=True)
+
+    # New goal habits
+    disruptions = db.Column(db.Integer, nullable=True)       # meetings / interruptions
+    junk_food = db.Column(db.Integer, nullable=True)         # 0 = no, 1 = yes
+
+    # Context inputs (no goal)
+    task_difficulty = db.Column(db.Integer, nullable=True)   # 1-5
+    free_hours = db.Column(db.Float, nullable=True)
+    day_type = db.Column(db.String(16), nullable=True)       # class / free / deadline
+    weather = db.Column(db.String(16), nullable=True)        # sunny / cloudy / rainy
+
+    user = db.relationship("User", backref="logs")
+
+
+@login_manager.user_loader
+def load_user(user_id):
+    return db.session.get(User, int(user_id))
+
+===== app/static/css/style.css =====
+
+.habit-grid { width: 100%; border-collapse: separate; border-spacing: 6px; }
+.habit-grid th { text-align: center; font-weight: 500; font-size: 0.8rem; color: #6c757d; }
+.habit-name { white-space: nowrap; font-size: 0.9rem; }
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; }
+.habit-cell { width: 30px; height: 30px; border-radius: 7px; background: #e5ebf7; margin: auto; }
+
+.heatmap { display: flex; gap: 3px; overflow-x: auto; padding-bottom: 6px; }
+.heatmap-col { display: flex; flex-direction: column; gap: 3px; }
+.month-label { height: 14px; font-size: 0.7rem; color: #6c757d; white-space: nowrap; }
+.heatmap-week { display: grid; grid-template-rows: repeat(7, 12px); gap: 3px; }
+.cell { width: 12px; height: 12px; border-radius: 2px; background: #ebedf0; display: inline-block; }
+.cell.l1 { background: #9be9a8; }
+.cell.l2 { background: #40c463; }
+.cell.l3 { background: #30a14e; }
+.cell.l4 { background: #216e39; }
+.cell.empty { background: transparent; }
+.legend .cell { margin: 0 2px; vertical-align: middle; }
+
+.today-panel { border: 1px solid #dee2e6; border-radius: 12px; padding: 12px; }
+.today-item { border-left: 4px solid #ccc; padding: 8px 10px; margin-bottom: 10px; }
+
+.habit-cell.nodata { background: transparent; border: 2px dashed #d0d7e5; }
+.cell.today-empty { background: #ffc107; }
+.cell.is-today { outline: 1px solid #0d6efd; outline-offset: 1px; }
+
+===== app/stats.py =====
+
+import pandas as pd
+from app.habits import HABITS, goals_met, is_met
+from app.models import ProductivityLog
+
+
+def load_df(user):
+    logs = (ProductivityLog.query.filter_by(user_id=user.id)
+            .order_by(ProductivityLog.log_date).all())
+    rows = []
+    for l in logs:
+        row = {"date": pd.Timestamp(l.log_date),
+               "score": goals_met(l) / len(HABITS) * 100}
+        for h in HABITS:
+            row[h["field"]] = getattr(l, h["field"])
+            row[h["key"] + "_met"] = is_met(h, l)      # True / False / None
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def _streaks(met, dates):
+    best = cur = 0
+    prev = None
+    for ok, d in zip(met, dates):
+        if not (ok == True):          # False, None or NaN breaks the streak
+            cur = 0
+        else:
+            cur = cur + 1 if (cur and (d - prev).days == 1) else 1
+        best = max(best, cur)
+        prev = d
+    return cur, best
+
+
+def habit_stats(df):
+    out = []
+    for h in HABITS:
+        met = df[h["key"] + "_met"]
+        known = met.dropna()
+        cur, best = _streaks(met, df["date"])
+        vals = pd.to_numeric(df[h["field"]], errors="coerce").dropna()
+        out.append({
+            "key": h["key"], "name": h["name"], "color": h["color"],
+            "average": round(float(vals.mean()), 2) if len(vals) else None,
+            "met_rate": round(float(known.astype(bool).mean()) * 100, 1) if len(known) else 0,
+            "current_streak": cur, "best_streak": best,
+        })
+    return out
+
+
+def correlations(df):
+    fields = [h["field"] for h in HABITS]
+    num = df[fields].apply(pd.to_numeric, errors="coerce")
+    c = num.corrwith(df["score"]).dropna()
+    c = c.reindex(c.abs().sort_values(ascending=False).index)
+    return {k: round(float(v), 3) for k, v in c.items()}
+
+
+def by_weekday(df):
+    order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    g = df.groupby(df["date"].dt.day_name())["score"].mean().reindex(order).dropna()
+    return {k: round(float(v), 1) for k, v in g.items()}
+
+
+def dashboard_stats(user):
+    df = load_df(user)
+    if df.empty:
+        return {"empty": True}
+    return {
+        "empty": False,
+        "summary": {
+            "total_logs": len(df),
+            "avg_score": round(float(df["score"].mean()), 1),
+            "best_day": str(df.loc[df["score"].idxmax(), "date"].date()),
+            "best_score": round(float(df["score"].max()), 1),
+        },
+        "habits": habit_stats(df),
+        "trend": {
+            "dates": [str(d.date()) for d in df["date"]],
+            "score": [round(float(v), 1) for v in df["score"]],
+            "rolling": [round(float(v), 1) for v in df["score"].rolling(7, min_periods=1).mean()],
+        },
+        "correlations": correlations(df),
+        "weekday": by_weekday(df),
+    }
+
+===== app/templates/base.html =====
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}PPIA{% endblock %}</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <nav class="navbar navbar-dark bg-dark">
+        <div class="container">
+            <a class="navbar-brand" href="{{ url_for('main.index') }}">Hibi</a>
+            <div class="d-flex align-items-center gap-2">
+                {% if current_user.is_authenticated %}
+                    <a class="btn btn-primary btn-sm" href="{{ url_for('main.dashboard') }}">Dashboard</a>
+                        <a class="btn btn-outline-light btn-sm" href="{{ url_for('main.profile') }}">{{ current_user.username }}</a>                    
+                        <form method="post" action="{{ url_for('auth.logout') }}" class="m-0">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button class="btn btn-outline-light btn-sm" type="submit">Log out</button>
+                    </form>
+                {% else %}
+                    <a class="btn btn-outline-light btn-sm" href="{{ url_for('auth.login') }}">Log in</a>
+                    <a class="btn btn-primary btn-sm" href="{{ url_for('auth.register') }}">Register</a>
+                {% endif %}
+            </div>
+        </div>
+    </nav>
+
+    <main class="container mt-4">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% for category, message in messages %}
+                <div class="alert alert-{{ category }}">{{ message }}</div>
+            {% endfor %}
+        {% endwith %}
+
+        {% block content %}{% endblock %}
+    </main>
+</body>
+</html>
+
+===== app/templates/dashboard.html =====
+
+{% extends "base.html" %}
+{% block content %}
+<div class="dash">
+  <h1>Dashboard</h1>
+
+  {% if stats.empty %}
+    <p>No data yet. Log a habit and come back.</p>
+  {% else %}
+
+  <div class="cards">
+    <div class="card"><span>Days logged</span><b>{{ stats.summary.total_logs }}</b></div>
+    <div class="card"><span>Avg score</span><b>{{ stats.summary.avg_score }}%</b></div>
+    <div class="card"><span>Best day</span><b>{{ stats.summary.best_day }}</b></div>
+    <div class="card"><span>Best score</span><b>{{ stats.summary.best_score }}%</b></div>
+  </div>
+
+  <h2>Productivity trend</h2>
+  <canvas id="trend" height="110"></canvas>
+
+  <h2>Average by weekday</h2>
+  <canvas id="weekday" height="90"></canvas>
+
+  <h2>Habits</h2>
+  <table class="habit-table">
+    <tr><th>Habit</th><th>Avg</th><th>Goal met</th><th>Streak</th><th>Best</th></tr>
+    {% for h in stats.habits %}
+    <tr>
+      <td><span class="dot" style="background:{{ h.color }}"></span>{{ h.name }}</td>
+      <td>{{ h.average if h.average is not none else "-" }}</td>
+      <td>{{ h.met_rate }}%</td>
+      <td>{{ h.current_streak }}</td>
+      <td>{{ h.best_streak }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+
+  <h2>What moves your score</h2>
+  <table class="habit-table">
+    {% for field, r in stats.correlations.items() %}
+    <tr><td>{{ field }}</td><td>{{ r }}</td></tr>
+    {% endfor %}
+  </table>
+  <small>Correlation shows association, not cause.</small>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script>
+    const s = {{ stats | tojson }};
+    new Chart(document.getElementById("trend"), {
+      type: "line",
+      data: {
+        labels: s.trend.dates,
+        datasets: [
+          {label: "Daily", data: s.trend.score, borderColor: "#aaa", tension: .3},
+          {label: "7-day avg", data: s.trend.rolling, borderColor: "#6f42c1", tension: .3}
+        ]
+      },
+      options: {scales: {y: {min: 0, max: 100}}}
+    });
+    new Chart(document.getElementById("weekday"), {
+      type: "bar",
+      data: {
+        labels: Object.keys(s.weekday),
+        datasets: [{label: "Avg score", data: Object.values(s.weekday), backgroundColor: "#6f42c1"}]
+      },
+      options: {scales: {y: {min: 0, max: 100}}}
+    });
+  </script>
+  {% endif %}
+</div>
+
+<style>
+  .cards {display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:12px; margin:16px 0}
+  .card {padding:14px; border-radius:10px; background:rgba(127,127,127,.12)}
+  .card span {display:block; font-size:.8rem; opacity:.7}
+  .card b {font-size:1.4rem}
+  .habit-table {width:100%; border-collapse:collapse; margin:8px 0 20px}
+  .habit-table th, .habit-table td {text-align:left; padding:6px 8px; border-bottom:1px solid rgba(127,127,127,.25)}
+  .dot {display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:8px}
+</style>
+{% endblock %}
+
+===== app/templates/habit_form.html =====
+
+{% extends "base.html" %}
+{% block title %}{{ habit.name }}{% endblock %}
+
+{% block content %}
+<style>
+  /* keep the goal tick readable on a selected (blue) chip */
+  .btn-check:checked + .btn .text-success, .btn-primary .text-success { color: inherit !important; }
+</style>
+{% set val = form.value.data %}
+<div class="row justify-content-center">
+  <div class="col-md-7 col-lg-5">
+    <h1 class="h4 mb-1"><span class="dot" style="background: {{ habit.color }}"></span>{{ habit.name }}</h1>
+    <p class="text-muted mb-3">
+      {% if has_goal %}Goal: {{ habit.name }}.{% else %}No goal here. It is context the estimate uses.{% endif %}
+      {% if habit.choices %}Choose your {{ habit.label|lower }}.{% else %}Enter your {{ habit.label|lower }}{% if habit.unit %} in {{ habit.unit }}{% endif %}.{% endif %}
+    </p>
+
+    {% if current_label %}
+    <div class="alert alert-light border py-2 small">
+      Already logged for {{ "today" if chosen_is_today else chosen_iso }}: <strong>{{ current_label }}</strong>. Saving replaces it.
+    </div>
+    {% endif %}
+
+    <form method="post" novalidate>
+      {{ form.hidden_tag() }}
+
+      <!-- date: today by default; pick another day to back-fill -->
+      <div class="mb-3">
+        <label class="form-label d-flex justify-content-between" for="log_date">
+          <span>Date</span>
+          <span class="small">
+            <a href="{{ url_for('main.log_habit', key=habit.key, date=today_iso) }}" class="{{ 'fw-semibold' if chosen_iso == today_iso }}">Today</a>
+            &middot;
+            <a href="{{ url_for('main.log_habit', key=habit.key, date=yesterday_iso) }}" class="{{ 'fw-semibold' if chosen_iso == yesterday_iso }}">Yesterday</a>
+          </span>
+        </label>
+        <input class="form-control{{ ' is-invalid' if form.log_date.errors }}" type="date" id="log_date" name="log_date"
+               value="{{ form.log_date.data.isoformat() if form.log_date.data else chosen_iso }}" max="{{ today_iso }}" required>
+        {% for error in form.log_date.errors %}<div class="invalid-feedback">{{ error }}</div>{% endfor %}
+      </div>
+
+      <div class="mb-3">
+        <label class="form-label" for="value">{{ habit.label }}</label>
+
+        {% if habit.choices and habit.choices|length <= chip_limit %}
+          <!-- few choices: big tappable options -->
+          <div class="d-flex flex-wrap gap-2">
+            {% for value, label in habit.choices %}
+              <input type="radio" class="btn-check" name="value" id="v{{ loop.index }}" value="{{ value }}" autocomplete="off"
+                     {% if val is not none and val|string == value|string %}checked{% endif %}>
+              <label class="btn btn-outline-primary" for="v{{ loop.index }}">{{ label }}{% if choice_ok.get(value|string) %} <span class="text-success">&#10003;</span>{% endif %}</label>
+            {% endfor %}
+          </div>
+          {% if has_goal %}<div class="form-text">&#10003; = meets the goal</div>{% endif %}
+
+        {% elif habit.choices %}
+          <select id="value" name="value" class="form-select form-select-lg{{ ' is-invalid' if form.value.errors }}">
+            <option value="" disabled {% if val is none %}selected{% endif %}>Choose...</option>
+            {% for value, label in habit.choices %}
+              <option value="{{ value }}" {% if val is not none and val|string == value|string %}selected{% endif %}>{{ label }}{% if choice_ok.get(value|string) %}  &#10003;{% endif %}</option>
+            {% endfor %}
+          </select>
+          {% if has_goal %}<div class="form-text">&#10003; = meets the goal</div>{% endif %}
+
+        {% else %}
+          <div class="input-group input-group-lg">
+            <button class="btn btn-outline-secondary" type="button" id="dec" aria-label="Decrease">&minus;</button>
+            <input class="form-control text-center{{ ' is-invalid' if form.value.errors }}" type="number" inputmode="decimal"
+                   id="value" name="value" value="{{ '' if val is none else '%g'|format(val) }}" placeholder="0"
+                   step="{{ habit.step or 1 }}"
+                   {% if habit.min is defined and habit.min is not none %}min="{{ habit.min }}"{% endif %}
+                   {% if habit.max is defined and habit.max is not none %}max="{{ habit.max }}"{% endif %} autofocus>
+            {% if habit.unit %}<span class="input-group-text">{{ habit.unit }}</span>{% endif %}
+            <button class="btn btn-outline-secondary" type="button" id="inc" aria-label="Increase">+</button>
+          </div>
+          {% if presets %}
+          <div class="d-flex flex-wrap gap-2 mt-2">
+            {% for p in presets %}
+              <button type="button" class="btn btn-sm btn-outline-secondary preset" data-value="{{ p.value }}">{{ '%g'|format(p.value) }}{% if p.ok %} <span class="text-success">&#10003;</span>{% endif %}</button>
+            {% endfor %}
+          </div>
+          {% if has_goal %}<div class="form-text">&#10003; = meets the goal</div>{% endif %}
+          {% endif %}
+          <div id="goal-msg" class="small mt-2" aria-live="polite"></div>
+          <script id="goal-points" type="application/json">{{ goal_points|tojson }}</script>
+        {% endif %}
+
+        {% for error in form.value.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+      </div>
+
+      <button class="btn btn-primary" type="submit">{{ "Update" if current_label else "Save" }}</button>
+      <a class="btn btn-link" href="{{ url_for('main.index') }}">Cancel</a>
+    </form>
+  </div>
+</div>
+
+<script>
+  (function () {
+    var dateEl = document.getElementById("log_date");
+    if (dateEl) {
+      dateEl.addEventListener("change", function () {
+        if (dateEl.value) location.href = "{{ url_for('main.log_habit', key=habit.key) }}?date=" + dateEl.value;
+      });
+    }
+
+    var input = document.getElementById("value");
+    var pts = document.getElementById("goal-points");
+    if (!input || input.tagName !== "INPUT") return;
+
+    var step = parseFloat(input.step) || 1;
+    var min = input.min !== "" ? parseFloat(input.min) : -Infinity;
+    var max = input.max !== "" ? parseFloat(input.max) : Infinity;
+    var points = pts ? JSON.parse(pts.textContent || "[]") : [];
+    var msg = document.getElementById("goal-msg");
+    var chips = document.querySelectorAll(".preset");
+
+    function fmt(n) { return String(Math.round(n * 1e6) / 1e6); }
+
+    function sync() {
+      var v = parseFloat(input.value);
+      chips.forEach(function (c) {
+        var on = !isNaN(v) && Math.abs(parseFloat(c.dataset.value) - v) < 1e-6;
+        c.classList.toggle("btn-primary", on);
+        c.classList.toggle("btn-outline-secondary", !on);
+      });
+      msg.textContent = "";
+      if (isNaN(v) || !points.length) return;
+      var hit = null;
+      points.forEach(function (p) { if (Math.abs(p[0] - v) < 1e-6) hit = p[1]; });
+      if (hit === null) return;
+      msg.className = "small mt-2 " + (hit ? "text-success" : "text-secondary");
+      msg.textContent = hit ? "\u2713 Meets your goal" : "Goal not met";
+    }
+
+    function nudge(dir) {
+      var v = parseFloat(input.value);
+      if (isNaN(v)) v = dir > 0 ? min === -Infinity ? 0 : min : 0;
+      else v = v + dir * step;
+      input.value = fmt(Math.min(max, Math.max(min, v)));
+      sync();
+    }
+
+    document.getElementById("dec").addEventListener("click", function () { nudge(-1); });
+    document.getElementById("inc").addEventListener("click", function () { nudge(1); });
+    chips.forEach(function (c) {
+      c.addEventListener("click", function () { input.value = c.dataset.value; sync(); });
+    });
+    input.addEventListener("input", sync);
+    sync();
+  })();
+</script>
+{% endblock %}
+
+===== app/templates/index.html =====
+
+{% extends "base.html" %}
+
+{% block content %}
+{% if data %}
+<div class="row g-4">
+  <div class="col-lg-8">
+    <h1 class="display-6 fw-semibold">{{ data.greeting }}, {{ current_user.username }}</h1>
+    <p class="text-muted">
+      {% if data.total_logs == 0 %}Nothing logged yet. Use the <strong>Log</strong> buttons on the right to start.
+      {% else %}{{ data.total_logs }} day{{ "s" if data.total_logs != 1 }} logged in the last year.{% endif %}
+    </p>
+
+    {% if data.estimate %}
+    <button type="button" id="score-jump" class="btn btn-outline-primary btn-sm mb-3">Jump to estimated score &darr;</button>
+    {% endif %}
+
+    <div class="d-flex justify-content-between small text-muted mb-1">
+      <span>This week</span><span>{{ data.percent }}% of goals achieved</span>
+    </div>
+    <div class="progress mb-4" style="height: 8px;">
+      <div class="progress-bar" style="width: {{ data.percent }}%"></div>
+    </div>
+
+    <table class="habit-grid mb-5">
+      <thead>
+        <tr>
+          <th></th>
+          {% for day in ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"] %}<th>{{ day }}</th>{% endfor %}
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for h in data.habits %}
+        <tr>
+          <td class="habit-name"><span class="dot" style="background: {{ h.color }}"></span>{{ h.name }}</td>
+          {% for done in h.days %}
+            <td><div class="habit-cell{% if done is none %} nodata{% endif %}" {% if done %}style="background: {{ h.color }}"{% endif %}></div></td>
+          {% endfor %}
+          <td class="text-muted small">{{ h.done }} / 7</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <!-- GITHUB HEATMAP: small by default, expands to full year -->
+    <div class="d-flex justify-content-between align-items-center mb-2">
+      <h2 class="h6 mb-0">Your last year</h2>
+      <button type="button" id="heatmap-toggle" class="btn btn-link btn-sm p-0">Show full year</button>
+    </div>
+
+    <div class="heatmap" id="heatmap">
+      {% for week in data.weeks %}
+        <div class="heatmap-col{% if loop.revindex > 8 %} old-week{% endif %}">
+          <div class="month-label">{{ data.month_labels[loop.index0] }}</div>
+          <div class="heatmap-week">
+            {% for c in week %}
+              {% if c %}
+                <div class="cell l{{ c.level }}{% if c.today and not c.logged %} today-empty{% endif %}{% if c.today %} is-today{% endif %}" title="{{ c.tip }}"></div>
+              {% else %}
+                <div class="cell empty"></div>
+              {% endif %}
+            {% endfor %}
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+
+    <div class="legend small text-muted mt-2">
+      <span class="cell l0"></span> No data
+      <span class="cell today-empty ms-2"></span> Today, not logged
+      <span class="ms-3">Less</span>
+      <span class="cell l1"></span><span class="cell l2"></span><span class="cell l3"></span><span class="cell l4"></span>
+      <span>Full day</span>
+    </div>
+  </div>
+
+
+  <div class="col-lg-4">
+    <h2 class="h5 mb-3">{{ data.today_label }}</h2>
+
+    {% if not data.today_logged %}
+    <div class="alert alert-warning py-2 small">No data for today yet.</div>
+    {% endif %}
+
+  <!-- panel input user -->
+  <div class="today-panel">
+    {% for h in data.habits %}
+      {% set state = h.days[data.today_index] %}
+      <div class="today-item" style="border-left-color: {{ h.color }}">
+        <div class="d-flex justify-content-between align-items-center">
+          <strong>{{ h.name }}</strong>
+          {% if state is none %}<span class="badge bg-light text-muted border">No data</span>
+          {% elif state %}<span class="badge" style="background: {{ h.color }}">Done</span>
+          {% else %}<span class="badge bg-secondary">Not met</span>{% endif %}
+        </div>
+
+        {% if h.type == "check" %}
+        <form method="post" action="{{ url_for('main.toggle_habit', key=h.key) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button class="btn btn-outline-primary btn-sm w-100 mt-2" type="submit">{{ "Undo" if state else "Mark done" }}</button>
+        </form>
+        {% else %}
+        <a class="btn btn-outline-primary btn-sm w-100 mt-2" href="{{ url_for('main.log_habit', key=h.key) }}">{{ "Log" if state is none else "Edit" }}</a>
+        {% endif %}
+      </div>
+    {% endfor %}
+
+    {% if data.context %}
+    <div class="small text-muted text-uppercase mt-3 mb-2" style="letter-spacing: .05em;">Context</div>
+    {% set palette = ["#0dcaf0", "#fd7e14", "#20c997", "#6f42c1"] %}
+    {% for c in data.context %}
+      {% set color = palette[loop.index0 % 4] %}
+      <div class="today-item" style="border-left-color: {{ color }}">
+        <div class="d-flex justify-content-between align-items-center">
+          <strong>{{ c.name }}</strong>
+          {% if c.shown %}<span class="badge" style="background: {{ color }}">{{ c.shown }}</span>
+          {% else %}<span class="badge bg-light text-muted border">No data</span>{% endif %}
+        </div>
+        <a class="btn btn-outline-primary btn-sm w-100 mt-2" href="{{ url_for('main.log_habit', key=c.key) }}">{{ "Edit" if c.shown else "Log" }}</a>
+      </div>
+    {% endfor %}
+    {% endif %}
+  </div>
+
+    <!-- ML estimate (experimental): data.estimate is set by the main route; hidden if absent -->
+    {% if data.estimate %}
+    <div class="card mt-3 mb-3" id="estimate-card">
+      <div class="card-body py-3">
+        <div class="d-flex justify-content-between align-items-center">
+          <h3 class="h6 mb-0">Estimated score</h3>
+          <span class="badge bg-warning text-dark">Experimental</span>
+        </div>
+        {% if data.estimate.status == "ok" %}
+          {% set e = data.estimate %}
+          {% set colors = {"low": "#e5484d", "medium": "#f5a623", "high": "#30a46c"} %}
+          <div class="d-flex align-items-baseline gap-2 mt-2">
+            <span class="display-6 fw-semibold">{{ e.score }}</span><span class="text-muted">/ 100</span>
+            <span class="badge ms-auto" style="background: {{ colors[e.level] }}">{{ e.level|capitalize }}</span>
+          </div>
+
+          <!-- gauge: Low / Medium / High zones, the score marker, and the typical-error stripe -->
+          <div class="est-gauge" style="background: linear-gradient(to right,
+               {{ colors.low }} 0 {{ e.low_below }}%, {{ colors.medium }} {{ e.low_below }}% {{ e.high_from }}%,
+               {{ colors.high }} {{ e.high_from }}% 100%);"
+               title="Low below {{ e.low_below }}, medium up to {{ e.high_from }}, high above">
+            {% if e.range_lo is not none %}<div class="est-range" style="left: {{ e.range_lo }}%; width: {{ e.range_hi - e.range_lo }}%;"></div>{% endif %}
+            <div class="est-marker" style="left: {{ e.score }}%;"></div>
+          </div>
+          <div class="est-zones">
+            <span style="width: {{ e.low_below }}%">Low</span>
+            <span style="width: {{ e.high_from - e.low_below }}%">Medium</span>
+            <span style="width: {{ 100 - e.high_from }}%">High</span>
+          </div>
+
+          {% if e.range_lo is not none %}
+          <p class="small mb-2">Likely between <strong>{{ e.range_lo|round|int }}</strong> and <strong>{{ e.range_hi|round|int }}</strong>
+            <span class="text-muted">(typical error &plusmn;{{ e.error }})</span></p>
+          {% endif %}
+
+          <div class="small text-muted mb-1">How sure is the model about the level?</div>
+          <div class="est-probs mb-1">
+            {% for p in e.probs %}{% if p.pct > 0 %}<span style="width: {{ p.pct }}%; background: {{ colors[p.level] }}" title="{{ p.level|capitalize }} {{ p.pct }}%"></span>{% endif %}{% endfor %}
+          </div>
+          <div class="small mb-2">
+            {% for p in e.probs %}<span class="me-2"><span class="est-dot" style="background: {{ colors[p.level] }}"></span>{{ p.level|capitalize }} {{ p.pct }}%</span>{% endfor %}
+          </div>
+
+          {% if e.levers %}
+          <div class="small fw-semibold mt-3">In the model, what would add the most</div>
+          <ul class="small ps-3 mb-2">
+            {% for l in e.levers %}<li>{{ l.text }} <span class="text-success">+{{ l.gain }} pts</span></li>{% endfor %}
+          </ul>
+          {% endif %}
+
+          <details class="small mb-2">
+            <summary class="text-primary" style="cursor: pointer;">How to read this</summary>
+            <ul class="ps-3 mt-2 mb-0 text-muted">
+              <li>The score is the model's guess (0&ndash;100) for a day with these inputs.</li>
+              <li>Levels: Low below {{ e.low_below }}, Medium up to {{ e.high_from }}, High above.</li>
+              <li>The outlined stripe on the bar is the typical error; the real figure could land anywhere in it.</li>
+              <li>The &quot;add the most&quot; list re-runs the model with one change. It shows what the model learned, not what will happen to you.</li>
+              <li>The model was trained on simulated days. It is a demo of the method, not advice.</li>
+            </ul>
+          </details>
+
+          <p class="small text-muted mb-1">Based on {{ e.source }}. Not a forecast for tomorrow.</p>
+          <a class="small" href="{{ url_for('insights.estimate_log', log_id=e.log_id) }}">Details</a>
+          <span class="small text-muted">&middot;</span>
+          <a class="small" href="{{ url_for('insights.index') }}">Try your own numbers</a>
+        {% elif data.estimate.status == "no_log" %}
+          <p class="small text-muted mt-2 mb-0">Log a day to see an estimate.</p>
+        {% else %}
+          <p class="small text-muted mt-2 mb-0">Can't estimate yet. {{ data.estimate.message }}</p>
+        {% endif %}
+      </div>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+
+
+
+
+<style>
+  /* collapsed: hide all but the last 8 weeks */
+  .heatmap:not(.expanded) .old-week { display: none; }
+  .heatmap { overflow-x: auto; }
+  #estimate-card { scroll-margin-top: 1rem; transition: box-shadow .3s; }
+  #estimate-card.flash { box-shadow: 0 0 0 .25rem rgba(13, 110, 253, .35); }
+
+  /* estimate card */
+  .est-gauge { position: relative; height: 10px; border-radius: 6px; margin: .9rem 0 .2rem; }
+  .est-range { position: absolute; top: -3px; bottom: -3px; border: 2px solid rgba(33, 37, 41, .6); border-radius: 6px; }
+  .est-marker { position: absolute; top: -5px; width: 4px; height: 20px; border-radius: 2px; background: #212529; transform: translateX(-50%); }
+  .est-zones { display: flex; font-size: .7rem; color: #6c757d; margin-bottom: .6rem; }
+  .est-zones span { text-align: center; }
+  .est-probs { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: #e9ecef; }
+  .est-probs span { display: block; height: 100%; }
+  .est-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }
+</style>
+
+<script>
+  (function () {
+    var btn = document.getElementById("heatmap-toggle");
+    var map = document.getElementById("heatmap");
+    if (!btn || !map) return;
+
+    function scrollToLatest() {
+      map.scrollLeft = map.scrollWidth;
+    }
+
+    btn.addEventListener("click", function () {
+      var open = map.classList.toggle("expanded");
+      btn.textContent = open ? "Show less" : "Show full year";
+      scrollToLatest();
+    });
+
+    scrollToLatest();
+    window.addEventListener("load", scrollToLatest);
+  })();
+
+  (function () {
+    var btn = document.getElementById("score-jump");
+    var card = document.getElementById("estimate-card");
+    if (!btn || !card) return;
+    btn.addEventListener("click", function () {
+      card.scrollIntoView({ behavior: "smooth", block: "center" });
+      card.classList.add("flash");
+      setTimeout(function () { card.classList.remove("flash"); }, 1400);
+    });
+  })();
+</script>
+
+{% else %}
+<!-- header -->
+<h1>Hibi</h1>
+<p>Personal Productivity Intelligence App</p>
+<a class="btn btn-primary btn-lg" href="{{ url_for('auth.login') }}">Log in to get started</a>
+{% endif %}
+{% endblock %}
+
+===== app/templates/insights/_result.html =====
+
+<div class="card">
+  <div class="card-body">
+    <div class="d-flex justify-content-between align-items-center">
+      <h2 class="h6 mb-0">Estimated score</h2>
+      <span class="badge bg-warning text-dark">Experimental</span>
+    </div>
+    <div class="display-6 fw-semibold mt-2">{{ result.predicted_score }}<span class="fs-6 text-muted"> / 100</span></div>
+    <p class="mb-2">Level: <strong>{{ result.predicted_level }}</strong>
+      {% if result.typical_error_points %}<span class="text-muted">&middot; typically &plusmn;{{ result.typical_error_points|round(1) }} points</span>{% endif %}
+    </p>
+    {% for level, p in result.level_probabilities.items() %}
+    <div class="d-flex justify-content-between small"><span>{{ level }}</span><span>{{ (p * 100)|round|int }}%</span></div>
+    <div class="progress mb-2" style="height: 6px;"><div class="progress-bar" style="width: {{ (p * 100)|round|int }}%"></div></div>
+    {% endfor %}
+    <p class="small text-muted mb-0 mt-2">{{ result.disclaimer }}</p>
+  </div>
+</div>
+
+===== app/templates/insights/estimate.html =====
+
+{% extends "base.html" %}
+{% block title %}Estimate for {{ log.log_date }}{% endblock %}
+
+{% block content %}
+<h1 class="h3 mb-3">Estimate for {{ log.log_date.strftime("%a, %b %d, %Y") }}</h1>
+
+{% if message %}
+  <div class="alert alert-info">{{ message }}</div>
+{% else %}
+<div class="row g-4">
+  <div class="col-lg-5">{% include "insights/_result.html" %}</div>
+  <div class="col-lg-7">
+    <h2 class="h6">Inputs used for this day</h2>
+    <table class="table table-sm">
+      <tbody>
+        {% for label, value in rows %}<tr><td>{{ label }}</td><td class="text-end">{{ value }}</td></tr>{% endfor %}
+      </tbody>
+    </table>
+    {% if drivers %}
+    <h2 class="h6 mt-3">What the model leans on most</h2>
+    <ul class="small mb-1">
+      {% for name, pct in drivers %}<li>{{ name }}: {{ pct }}%</li>{% endfor %}
+    </ul>
+    <p class="small text-muted">This is how much the trained model relies on each input overall. It shows what the model learned from synthetic data, not what causes your score.</p>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+<a class="btn btn-link px-0" href="{{ url_for('main.index') }}">Back to home</a>
+{% endblock %}
+
+===== app/templates/insights/index.html =====
+
+{% extends "base.html" %}
+{% block title %}Try your own numbers{% endblock %}
+
+{% block content %}
+<div class="row g-4">
+  <div class="col-lg-7">
+    <h1 class="h3 mb-1">Try your own numbers</h1>
+    <p class="text-muted">Describe a day and see what the model estimates for it. This does not save anything.</p>
+
+    {% if not trained %}
+    <div class="alert alert-warning">Models are not trained yet. Run <code>python -m ml.train</code> and restart the app.</div>
+    {% endif %}
+
+    <form method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="row">
+        {% for f in fields %}
+        <div class="col-sm-6 mb-3">
+          {% if f.kind == "select" %}
+            <label class="form-label" for="{{ f.name }}">{{ f.label }}</label>
+            <select class="form-select" id="{{ f.name }}" name="{{ f.name }}">
+              {% for o in f.options %}<option value="{{ o }}" {% if o == f.value %}selected{% endif %}>{{ o|capitalize }}</option>{% endfor %}
+            </select>
+          {% elif f.kind == "check" %}
+            <div class="form-check mt-4">
+              <input class="form-check-input" type="checkbox" id="{{ f.name }}" name="{{ f.name }}" value="1" {% if f.value %}checked{% endif %}>
+              <label class="form-check-label" for="{{ f.name }}">{{ f.label }}</label>
+            </div>
+          {% else %}
+            <label class="form-label" for="{{ f.name }}">{{ f.label }}</label>
+            <input class="form-control{{ ' is-invalid' if error_field == f.name }}" type="number" id="{{ f.name }}" name="{{ f.name }}" value="{{ f.value }}"
+                   {% if f.min is not none %}min="{{ f.min }}"{% endif %} {% if f.max is not none %}max="{{ f.max }}"{% endif %} step="{{ f.step }}" required>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      <button class="btn btn-primary" type="submit" {% if not trained %}disabled{% endif %}>Estimate</button>
+      <a class="btn btn-link" href="{{ url_for('main.index') }}">Back</a>
+    </form>
+  </div>
+
+  <div class="col-lg-5">
+    {% if error %}<div class="alert alert-danger">{{ error }}</div>{% endif %}
+    {% if result %}{% include "insights/_result.html" %}{% endif %}
+    <p class="small text-muted mt-3">
+      You have {{ n_logs }} logged day{{ "s" if n_logs != 1 }}.
+      {% if stage == "general" %}Estimates use a model trained on synthetic data only.
+      {% elif stage == "descriptive" %}You have enough days to start comparing the estimate with your own averages.
+      {% else %}You have enough days to look for trends in your own logs.{% endif %}
+    </p>
+  </div>
+</div>
+{% endblock %}
+
+===== app/templates/log_form.html =====
+
+{% extends "base.html" %}
+{% block title %}Log a day{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-8 col-lg-6">
+    <h1 class="h3 mb-3">Log a day</h1>
+    <form method="post" novalidate>
+      {{ form.hidden_tag() }}
+      <div class="row">
+        {% for field in [form.log_date, form.study_hours, form.sleep_hours, form.screen_time,
+                         form.exercise_minutes, form.caffeine_mg, form.stress_level,
+                         form.break_count, form.study_sessions, form.self_rating] %}
+          <div class="col-sm-6 mb-3">
+            {{ field.label(class="form-label") }}
+            {{ field(class="form-control" ~ (" is-invalid" if field.errors else "")) }}
+            {% for error in field.errors %}<div class="invalid-feedback">{{ error }}</div>{% endfor %}
+          </div>
+        {% endfor %}
+      </div>
+      <div class="mb-3">
+        {{ form.notes.label(class="form-label") }}
+        {{ form.notes(class="form-control", rows=2) }}
+      </div>
+      {{ form.submit(class="btn btn-primary") }}
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+===== app/templates/login.html =====
+
+{% extends "base.html" %}
+{% block title %}Log in - PPIA{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-6 col-lg-5">
+    <h1 class="h3 mb-3">Log in</h1>
+    <form method="post" novalidate>
+      {{ form.hidden_tag() }}
+      {% for field in [form.email, form.password] %}
+        <div class="mb-3">
+          {{ field.label(class="form-label") }}
+          {{ field(class="form-control" ~ (" is-invalid" if field.errors else "")) }}
+          {% for error in field.errors %}
+            <div class="invalid-feedback">{{ error }}</div>
+          {% endfor %}
+        </div>
+      {% endfor %}
+      {{ form.submit(class="btn btn-primary w-100") }}
+    </form>
+    <p class="mt-3">No account yet? <a href="{{ url_for('auth.register') }}">Register</a></p>
+  </div>
+</div>
+{% endblock %}
+
+===== app/templates/profile.html =====
+
+{% extends "base.html" %}
+{% block content %}
+<h1 class="h3 mb-3">Profile</h1>
+<div class="card p-3" style="max-width: 400px;">
+  <p class="mb-1"><strong>Username:</strong> {{ current_user.username }}</p>
+  <p class="mb-0"><strong>Days logged:</strong> {{ total_logs }}</p>
+</div>
+{% endblock %}
+
+===== app/templates/register.html =====
+
+{% extends "base.html" %}
+{% block title %}Register - PPIA{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-6 col-lg-5">
+    <h1 class="h3 mb-3">Create account</h1>
+    <form method="post" novalidate>
+      {{ form.hidden_tag() }}
+      {% for field in [form.username, form.email, form.password, form.confirm_password] %}
+        <div class="mb-3">
+          {{ field.label(class="form-label") }}
+          {{ field(class="form-control" ~ (" is-invalid" if field.errors else "")) }}
+          {% for error in field.errors %}
+            <div class="invalid-feedback">{{ error }}</div>
+          {% endfor %}
+        </div>
+      {% endfor %}
+      {{ form.submit(class="btn btn-primary w-100") }}
+    </form>
+    <p class="mt-3">Already have an account? <a href="{{ url_for('auth.login') }}">Log in</a></p>
+  </div>
+</div>
+{% endblock %}
+
+===== artifacts/evaluation_report.md =====
+
+# Evaluation report (synthetic data)
+
+Trained on synthetic (simulated) data. Metrics show how well the models recover the rules written in dummydataset.py, not how well they would predict a real person.
+
+Hold-out: 4 people never seen in training (1940 rows). The hold-out contains only 4 people, so hold-out metrics are noisy (they change a lot with a different split). Prefer the cross-validated numbers, or generate more people in dummydataset.py.
+
+## Regression (xgboost)
+- Hold-out R2 = 0.005, MAE = 9.19 points (score range 0-100)
+- Cross-validated numbers (more stable) are in metadata.json under regression.candidates
+
+## Classification (xgboost)
+- Hold-out accuracy = 0.605, macro one-vs-rest ROC-AUC = 0.762
+- Read confusion_matrix.png: the 'low' level is rare, so expect it to be the hardest class.
+
+## Permutation importance (hold-out)
+| feature | regression MAE increase | classification F1 drop |
+|---|---|---|
+| stress_level | 1.138 | 0.044 |
+| study_hours | 0.456 | 0.024 |
+| caffeine_mg | 0.307 | 0.001 |
+| study_sessions | 0.133 | 0.005 |
+| journaled | -0.123 | -0.001 |
+
+Importance describes what the fitted model uses. It is not causal and correlated features share credit.
+
+===== check_caffeine.py =====
+
+from app import create_app
+
+app = create_app()
+with app.app_context():
+    from app.habits import HABITS
+    from app.models import ProductivityLog
+
+    print("Habit definition(s):")
+    for h in HABITS:
+        text = (str(h.get("key", "")) + str(h.get("field", "")) + str(h.get("name", ""))).lower()
+        if "caff" in text:
+            print("  ", {k: h.get(k) for k in ("key", "field", "name", "unit", "min", "max")})
+
+    rows = ProductivityLog.query.filter(ProductivityLog.caffeine_mg.isnot(None)).all()
+    values = [r.caffeine_mg for r in rows]
+    if values:
+        print(f"Stored caffeine values: {len(values)} rows, min {min(values)}, max {max(values)}")
+        print("Values:", sorted(set(values)))
+    else:
+        print("No caffeine values stored yet.")
+
+===== config.py =====
+
+import os
+import secrets
+
+
+class Config:
+    SECRET_KEY = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
+    SQLALCHEMY_DATABASE_URI = os.environ.get("DATABASE_URL", "sqlite:///ppia.db")
+    SQLALCHEMY_TRACK_MODIFICATIONS = False
+
+===== context.md =====
+
+
+# Project Context: Personal Productivity Intelligence App
+
+## 1. Project Overview
+
+Build a full-stack web application called **Personal Productivity Intelligence App (PPIA)**.
+
+The application allows users to register, log in securely, record daily productivity-related activities, visualize personal trends, and receive machine-learning-based predictions and insights.
+
+The main purpose is to combine software engineering, database management, data analysis, statistics, and machine learning into one complete portfolio project.
+
+This is not merely a CRUD application or a dashboard displaying static charts. Machine learning and experimentation should be central components of the project.
+
+The initial version should use synthetic data for model development. Once the application is functional, it should collect real daily logs from registered users and use those logs for personalized analysis when sufficient data is available.
+
+### Primary objectives
+
+1. Build a complete authentication system.
+2. Implement a relational database with proper relationships.
+3. Allow users to record, edit, view, and delete their daily productivity logs.
+4. Develop an interactive dashboard with charts and statistics.
+5. Experiment with multiple machine-learning algorithms.
+6. Compare models using appropriate evaluation metrics.
+7. Integrate trained models into the application.
+8. Provide personalized, explainable insights based on logged data.
+9. Keep the architecture modular, maintainable, and suitable for future expansion.
+
+---
+
+## 2. Target Users
+
+Students, developers, and individuals who want to understand their daily productivity patterns.
+
+Each user must have a private account. Users must only be able to access their own productivity records and personal analytics.
+
+The application should use a clean, modern, responsive interface suitable for desktop and mobile browsers.
+
+---
+
+## 3. Technology Stack
+
+Use the following stack unless a strong technical reason justifies a change.
+
+### Backend
+- Python
+- Flask
+- Flask-SQLAlchemy
+- Flask-Login
+- Flask-WTF for form handling and CSRF protection
+- Werkzeug password hashing utilities
+
+### Database
+- SQLite during local development
+- SQLAlchemy ORM
+- Design the application so it can migrate to PostgreSQL later
+
+### Frontend
+- HTML5
+- CSS3
+- JavaScript
+- Bootstrap 5 or custom responsive CSS
+- Chart.js for interactive charts
+
+### Data science
+- pandas
+- NumPy
+- Matplotlib
+- Seaborn
+- scikit-learn
+
+### Machine learning
+- Linear Regression
+- Random Forest Regressor
+- Gradient Boosting Regressor
+- XGBoost Regressor
+- Logistic Regression
+- Random Forest Classifier
+- Gradient Boosting Classifier
+- XGBoost Classifier
+- K-Means clustering
+
+### Model persistence
+- joblib for saving trained preprocessing pipelines and models
+
+### Development environment
+- Windows
+- Visual Studio Code
+- Python virtual environment
+- Git and GitHub
+
+Use compatible, stable package versions. Include a requirements.txt file.
+
+---
+
+## 4. Core Features
+
+### 4.1 Authentication
+
+Implement:
+- User registration
+- Login
+- Logout
+- Password hashing
+- Session management
+- Protected routes
+- Form validation
+- Duplicate email prevention
+- Appropriate authentication error messages
+
+Never store passwords in plaintext.
+
+Use Flask-Login for session management. Protect all private routes and enforce user ownership on every database query involving personal records.
+
+Do not expose secret keys or credentials in source control. Load configuration and secrets through environment variables.
+
+### 4.2 User Dashboard
+
+After logging in, the user should see a dashboard containing:
+
+- Average productivity score
+- Total number of logged days
+- Number and percentage of productive days
+- Average daily study hours
+- Average sleep duration
+- Average screen time
+- Recent productivity history
+- Productivity trend chart
+- Study hours versus productivity chart
+- Recent daily logs
+- Quick action to add a new log
+
+All dashboard values must come from the logged-in user's actual database records.
+
+Do not display fabricated statistics as if they were real user data.
+
+Provide an informative empty state for new users who have not recorded any days.
+
+### 4.3 Daily Productivity Logging
+
+Allow users to create, view, update, and delete daily records.
+
+Each record should include:
+
+- Date
+- Study hours
+- Sleep hours
+- Screen time in hours
+- Exercise duration in minutes
+- Caffeine consumption in milligrams
+- Stress level from 1 to 10
+- Number of breaks
+- Number of study sessions
+- Optional notes
+
+Validate numerical ranges and reject invalid submissions.
+
+Prevent duplicate daily logs for the same user and date unless the application is deliberately extended to support multiple sessions per day.
+
+Use sensible limits for inputs, such as 0â€“24 hours for sleep and 0â€“24 hours for study or screen time.
+
+The sum of different activities should not automatically be assumed to fit within 24 hours because activities may overlap.
+
+### 4.4 Productivity History
+
+Create a history page where users can:
+
+- Browse daily logs
+- Filter by date range
+- Sort by date or productivity score
+- Edit or delete entries
+- View individual records
+- Export their own records as CSV
+
+Ensure that exported records contain only the requesting user's data.
+
+### 4.5 Analytics
+
+Provide:
+- Daily and weekly productivity trends
+- Monthly summaries
+- Correlation heatmaps
+- Distributions of numerical features
+- Study duration versus productivity
+- Sleep duration versus productivity
+- Stress versus productivity
+- Exercise versus productivity
+- Summary statistics and outlier detection
+
+Clearly distinguish correlation from causation.
+
+---
+
+## 5. Database Design
+
+Use SQLAlchemy models and appropriate foreign keys, constraints, and indexes.
+
+### Table: users
+
+Fields:
+- id: primary key
+- username: unique username
+- email: unique email
+- password_hash: hashed password
+- created_at: account creation timestamp
+
+### Table: productivity_logs
+
+Fields:
+- id: primary key
+- user_id: foreign key referencing users.id
+- log_date: date of the record
+- study_hours: floating-point number
+- sleep_hours: floating-point number
+- screen_time: floating-point number
+- exercise_minutes: floating-point number
+- caffeine_mg: integer
+- stress_level: integer from 1 to 10
+- break_count: integer
+- study_sessions: integer
+- notes: optional text
+- created_at: timestamp
+- updated_at: timestamp
+
+Add a unique constraint on (user_id, log_date).
+
+### Table: prediction_history (optional for the first version)
+
+Fields:
+- id: primary key
+- user_id: foreign key
+- prediction_date: timestamp
+- model_version: model identifier
+- predicted_score: numerical prediction
+- predicted_class: predicted productivity category, if applicable
+- prediction_type: regression or classification
+
+Only store predictions when useful, and make clear whether each prediction is for a future day or an estimate of a recorded day.
+
+### Relationships
+
+One user can have many productivity logs and prediction records.
+
+Deleting an account should not leave accessible orphaned personal data. Implement an appropriate deletion policy.
+
+---
+
+## 6. Synthetic Dataset Generation
+
+Create a script named generate_data.py.
+
+Generate an initial dataset of approximately 10,000 synthetic daily observations and save it to:
+
+datasets/productivity.csv
+
+The dataset is intended for controlled machine-learning experiments, not as evidence about real human behavior.
+
+### Initial features
+
+- study_hours
+- sleep_hours
+- screen_time
+- exercise_minutes
+- caffeine_mg
+- stress_level
+- break_count
+- study_sessions
+- day_of_week
+- previous_day_productivity
+
+### Target variables
+
+- productivity_score: continuous value from 0 to 100
+- productive_day: binary label derived from productivity_score using a documented threshold
+
+### Data generation requirements
+
+Do not generate every variable independently from a uniform or random distribution.
+
+Use plausible distributions and introduce relationships between features.
+
+Examples:
+- Sleep duration should generally fall within a realistic range.
+- Study hours and study sessions should have some relationship.
+- Stress, sleep, and productivity should have imperfect relationships.
+- Exercise duration should include many low or zero values.
+- Screen time should vary among observations.
+- Consecutive days may exhibit temporal dependence.
+- Include random noise to avoid perfectly predictable outcomes.
+
+Create nonlinear effects, such as diminishing returns from excessive study time and a nonlinear relationship between sleep and productivity.
+
+Include some correlated features, occasional outliers, and a small percentage of missing values in selected input columns.
+
+Document the data-generation assumptions and make the random seed configurable for reproducibility.
+
+Avoid including features that directly reveal the target or leak future information.
+
+For example, if predicting a day's productivity, do not use that day's actual productivity score as an input feature.
+
+The generator may create additional synthetic information needed for controlled experiments, but clearly document any fields not intended for the production application.
+
+### Important limitation
+
+A model trained on synthetic data learns the artificial patterns introduced by the generator. Its metrics do not establish that the model will predict real human productivity accurately.
+
+---
+
+## 7. Machine-Learning Experiments
+
+Organize machine-learning code separately from the Flask routes.
+
+Use reusable functions and scikit-learn Pipelines where appropriate.
+
+### 7.1 Regression
+
+Objective: predict productivity_score from daily activity features.
+
+Compare:
+1. Linear Regression
+2. Random Forest Regressor
+3. Gradient Boosting Regressor
+4. XGBoost Regressor
+
+Evaluate with:
+- MAE
+- RMSE
+- RÂ²
+- Cross-validation
+
+Use an appropriate train/test split. Keep the test set untouched until final evaluation.
+
+For experiments involving sequential daily observations, consider a chronological split instead of randomly mixing future and past records.
+
+Tune hyperparameters using cross-validation on training data only.
+
+Do not assume XGBoost will always perform best.
+
+### 7.2 Classification
+
+Objective: predict whether a day will meet the defined productivity threshold.
+
+Compare:
+1. Logistic Regression
+2. Random Forest Classifier
+3. Gradient Boosting Classifier
+4. XGBoost Classifier
+
+Evaluate with:
+- Accuracy
+- Precision
+- Recall
+- F1-score
+- ROC-AUC
+- Confusion matrix
+- Precision-recall curve when class imbalance makes it useful
+
+If productive and unproductive days are imbalanced, report class distribution and use appropriate evaluation methods.
+
+If classification labels are generated from productivity_score, exclude productivity_score from the classification features. Otherwise, the model would receive information that directly determines the label.
+
+### 7.3 Clustering
+
+Objective: discover patterns among daily activity records without using productivity targets.
+
+Use K-Means with suitable numerical preprocessing and feature scaling.
+
+Experiment with different values of k.
+
+Evaluate cluster quality using metrics such as silhouette score, while considering whether the resulting clusters are interpretable.
+
+Profile each cluster using feature averages and distributions.
+
+Example interpretations might include:
+- Longer study days
+- Balanced activity days
+- Low-sleep days
+- High-screen-time days
+
+These descriptions must be derived from the actual cluster characteristics rather than hardcoded as guaranteed findings.
+
+Do not include productivity_score or productive_day in clustering inputs when claiming the clusters were discovered without target information.
+
+### 7.4 Model Interpretation
+
+Provide:
+- Permutation feature importance
+- Tree-based feature importance where appropriate
+- Partial dependence plots where appropriate
+- SHAP explanations as a possible later enhancement
+
+Explain that feature importance indicates model behavior and does not prove causation.
+
+Avoid describing feature importance as a percentage of causal influence.
+
+---
+
+## 8. Model Training and Integration
+
+Create separate scripts or modules for:
+
+- Synthetic data generation
+- Exploratory data analysis
+- Regression training
+- Classification training
+- Clustering
+- Model evaluation
+- Model persistence
+- Prediction inference
+
+Suggested structure:
+
+models/
+    regression_model.joblib
+    classification_model.joblib
+    scaler_or_pipeline.joblib
+
+Save fitted preprocessing and model steps together in pipelines where practical.
+
+The Flask application should load the selected trained model and perform inference without retraining it on every request.
+
+Provide a reproducible training workflow.
+
+Include:
+- Model version or metadata
+- Selected input feature names
+- Training dataset description
+- Evaluation metrics
+- Training configuration
+
+Never silently train or evaluate a model using the user's test data.
+
+Treat uploaded files and serialized model artifacts as untrusted inputs. Only load model artifacts from trusted sources.
+
+### Cold-start behavior
+
+A new user will not have enough personal history to train a reliable individualized model.
+
+Initially, use the model trained on synthetic data for demonstrations, clearly labeling its predictions as experimental.
+
+As users accumulate real records, enable personalized historical analysis and eventually personalized modeling when there is sufficient data.
+
+Do not claim that a model has learned a user's individual behavior when it has not.
+
+---
+
+## 9. Prediction Interface
+
+Create a page called ML Insights.
+
+Users can enter activity information and request a prediction.
+
+Display:
+- Predicted productivity score
+- Predicted productive-day probability, if using a classifier that supports calibrated probabilities
+- Selected model name
+- Relevant model evaluation information
+- An explanation of the prediction's limitations
+
+Example:
+
+Predicted productivity score: 76/100
+
+Estimated productive-day probability: 72%
+
+These values are illustrative only. Actual predictions must come from the trained model.
+
+Clearly distinguish the predicted score from the probability of meeting the productive-day threshold.
+
+A prediction based on today's inputs is not necessarily a forecast of tomorrow. For genuine next-day predictions, train and evaluate the model using features available before the day being predicted.
+
+Avoid generating unsupported recommendations such as claiming that sleeping one additional hour will definitely improve a score by a particular amount.
+
+---
+
+## 10. Application Pages
+
+Implement the following pages:
+
+1. Landing page
+2. Register
+3. Login
+4. Dashboard
+5. Add productivity log
+6. Edit productivity log
+7. Productivity history
+8. Analytics
+9. ML Insights
+10. Profile/settings
+11. Custom error pages for common HTTP errors
+
+Use a consistent navigation bar and responsive layout.
+
+The visual design should be clean, modern, and professional, with readable typography, accessible contrast, useful empty states, loading feedback, and validation messages.
+
+Avoid clutter and unnecessary animations.
+
+---
+
+## 11. Suggested Project Structure
+
+productivity_intelligence/
+|
+|-- app/
+|   |-- __init__.py
+|   |-- models.py
+|   |-- extensions.py
+|   |-- auth/
+|   |   |-- __init__.py
+|   |   |-- routes.py
+|   |   |-- forms.py
+|   |-- dashboard/
+|   |   |-- __init__.py
+|   |   |-- routes.py
+|   |-- productivity/
+|   |   |-- __init__.py
+|   |   |-- routes.py
+|   |-- analytics/
+|   |   |-- __init__.py
+|   |   |-- routes.py
+|   |-- ml/
+|   |   |-- __init__.py
+|   |   |-- routes.py
+|   |   |-- inference.py
+|   |-- templates/
+|   |   |-- base.html
+|   |   |-- index.html
+|   |   |-- auth/
+|   |   |-- dashboard/
+|   |   |-- productivity/
+|   |   |-- analytics/
+|   |   |-- ml/
+|   |-- static/
+|       |-- css/
+|       |-- js/
+|       |-- images/
+|
+|-- datasets/
+|   |-- .gitkeep
+|
+|-- ml/
+|   |-- generate_data.py
+|   |-- analyze_data.py
+|   |-- train_regression.py
+|   |-- train_classification.py
+|   |-- train_clustering.py
+|   |-- evaluate_models.py
+|   |-- utils.py
+|
+|-- artifacts/
+|   |-- .gitkeep
+|
+|-- tests/
+|   |-- test_auth.py
+|   |-- test_productivity.py
+|   |-- test_ml.py
+|
+|-- config.py
+|-- run.py
+|-- requirements.txt
+|-- .env.example
+|-- .gitignore
+|-- README.md
+
+Adjust the structure when necessary, but maintain a clear separation between application logic, database operations, and machine-learning code.
+
+Generated CSV files, private databases, secrets, and unnecessary model binaries should not be committed to Git.
+
+---
+
+## 12. Security Requirements
+
+Implement:
+- Password hashing
+- CSRF protection
+- Server-side input validation
+- SQLAlchemy parameterized database operations
+- Session protection
+- User ownership checks
+- Secure configuration through environment variables
+- Appropriate cookie security settings for deployment
+- Protection against unauthorized access to other users' records
+- Safe error handling that does not reveal credentials or secrets
+
+Use HTTPS in production.
+
+Do not expose raw exception tracebacks to ordinary users in production.
+
+Do not rely exclusively on hiding frontend controls for authorization.
+
+---
+
+## 13. Development Roadmap
+
+Build the application incrementally.
+
+### Phase 1: Project foundation
+- Set up the virtual environment.
+- Create the Flask application factory.
+- Configure SQLAlchemy and Flask-Login.
+- Create the initial database models.
+- Build a basic landing page.
+
+### Phase 2: Authentication
+- Implement registration and login.
+- Implement logout.
+- Add password hashing and CSRF protection.
+- Test protected routes.
+
+### Phase 3: Productivity CRUD
+- Implement daily log creation.
+- Implement editing and deletion.
+- Add history and date filtering.
+- Verify that users cannot access one another's data.
+
+### Phase 4: Synthetic data and analysis
+- Generate the initial CSV dataset.
+- Conduct EDA.
+- Document distributions and relationships.
+- Create visualizations.
+
+### Phase 5: Machine-learning experiments
+- Train regression models.
+- Train classification models.
+- Train K-Means.
+- Evaluate and compare models.
+- Save model artifacts and results.
+
+### Phase 6: Dashboard and analytics
+- Connect the dashboard to the real database.
+- Add interactive charts.
+- Implement historical summaries.
+- Add CSV export.
+
+### Phase 7: ML integration
+- Load saved pipelines.
+- Implement inference endpoints.
+- Create the ML Insights interface.
+- Clearly label experimental synthetic-data predictions.
+
+### Phase 8: Testing and polish
+- Test authentication and data ownership.
+- Test invalid inputs.
+- Test database operations.
+- Test ML inference and missing-feature handling.
+- Improve responsive design.
+- Document installation and usage.
+
+### Phase 9: Deployment
+- Configure PostgreSQL if needed.
+- Configure production secrets.
+- Deploy to a suitable hosting service.
+- Enable HTTPS.
+- Verify migrations, authentication, and database persistence.
+
+---
+
+## 14. Code Quality Requirements
+
+- Write readable, modular Python code.
+- Use meaningful names.
+- Avoid putting the entire application into one Python file.
+- Avoid duplicating model-training logic.
+- Add comments when they clarify non-obvious behavior.
+- Include requirements.txt and a complete README.
+- Provide setup and execution commands for Windows PowerShell.
+- Include basic automated tests.
+- Use database migrations when the schema becomes established.
+- Handle errors explicitly.
+- Never invent test results or claim code has been executed when it has not.
+- Do not hardcode demonstration predictions or dashboard statistics.
+- Keep machine-learning experiments reproducible.
+
+---
+
+## 15. Important ML Design Principles
+
+This project is primarily an educational and portfolio application.
+
+Follow these principles:
+
+1. A more complex algorithm is not automatically better.
+2. Compare models on the same split and evaluation protocol.
+3. Fit scalers and imputers only on training data through pipelines.
+4. Prevent target leakage.
+5. Use appropriate metrics for regression, classification, and clustering.
+6. Use a final holdout test set for unbiased final evaluation.
+7. Distinguish synthetic-data performance from real-world performance.
+8. Avoid claiming causation from correlations or feature importance.
+9. Do not train a personalized model from only a handful of daily records.
+10. Document assumptions, limitations, and experimental results.
+
+---
+
+## 16. Instructions for Claude
+
+Act as a senior full-stack Python developer and machine-learning mentor.
+
+I am a Computer Science student with some experience in Python, pandas, EDA, regression, classification, Random Forest, Gradient Boosting, KNN, K-Means, model evaluation, cross-validation, and XGBoost.
+
+I want to improve by building the application myself with your assistance.
+
+### How to collaborate with me
+
+- Work incrementally, one phase at a time.
+- Explain architectural decisions and why they are necessary.
+- Do not generate the entire project in one enormous response.
+- Start by proposing the architecture and the minimum viable implementation.
+- Explain the purpose of each file before introducing substantial code.
+- When providing code, give the exact file path and complete contents for new files.
+- For modifications, clearly identify what changes and provide the complete updated file when practical.
+- Include Windows PowerShell commands to create the environment, install packages, initialize the database, generate data, train models, and run the application.
+- Explain database relationships and security decisions.
+- Encourage me to implement understandable parts myself rather than blindly copying everything.
+- When debugging, identify the root cause instead of only giving a replacement snippet.
+- Do not introduce unnecessary technologies or abstractions.
+- Keep Flask, SQLAlchemy, and the ML pipeline understandable for a student.
+- Do not proceed to the next major phase until the current phase has a clear implementation and test plan.
+
+### First task
+
+Begin with Phase 1.
+
+Provide:
+1. A concise architecture explanation.
+2. The initial project directory structure.
+3. The virtual environment and package installation commands for Windows PowerShell.
+4. The minimum files required to start the Flask application.
+5. A simple landing page that runs successfully.
+6. Commands to launch the application and verify it in a browser.
+7. A brief explanation of what each file does.
+
+Do not implement authentication, productivity CRUD, or ML inference yet. We will add them in later phases after the foundation is working.
+
+===== ml/__init__.py =====
+
+
+===== ml/dummydataset.py =====
+
+"""
+dummydataset.py: synthetic daily productivity dataset for PPIA.
+
+Run from the project root (as a module, never the VS Code Run button):
+    python -m ml.dummydataset
+    python -m ml.dummydataset --seed 7 --rows 5000
+
+Writes datasets/productivity_logs.csv (the path set in ml/settings.py).
+
+WHAT THIS IS
+    Controlled experiment data, NOT evidence about real human behaviour.
+    A model trained on this learns the artificial rules written below.
+
+HOW IT IS BUILT
+    * N_PEOPLE synthetic people, each simulated for consecutive calendar days.
+    * Each person has a personal baseline and their own logging habit: they
+      keep logging with 90% probability, and resume after a miss with 40%.
+      Days they did not log are dropped, so log_streak is meaningful.
+    * day_type (class / free / deadline) drives free_hours, task_difficulty,
+      disruptions and stress. deep_work can never exceed free_hours.
+    * Stress follows a slow AR(1) process, so bad days cluster together.
+    * productivity_score is a NONLINEAR function of the features plus
+      momentum from the previous day and random noise.
+    * ~0.5% of rows get extreme outliers; ~3% of values are blanked in four
+      input columns to mimic missing data (train.py drops those rows).
+
+MODEL FEATURES (14 inputs, see ml/settings.py)
+    Numeric    : deep_work, sleep_hours, caffeine_level, stress_level,
+                 journaled, log_streak, disruptions, junk_food,
+                 task_difficulty, deep_work_days_prev7, free_hours
+    Categorical: day_type, weather        (one-hot encode in the ML code)
+    Targets    : productivity_score (0-100), productivity_level (low/medium/high)
+
+FEATURE DEFINITIONS
+    log_streak            consecutive logged days ending YESTERDAY, capped at 14.
+    deep_work_days_prev7  how many of the previous 7 calendar days met the deep
+                          work goal (>= 3h, and were logged). 0-7. Today is
+                          excluded. It is a count, not a streak, so one missed
+                          day does not reset it. For a person's first week it
+                          counts only the days that exist.
+    caffeine_level        0-10 scale, mg / 40, so 400 mg = 10 (the app's
+                          maximum) and "under 300mg" means a level below 7.5
+                          (7 or lower if the app logs whole levels).
+
+LEAKAGE WARNING
+    previous_day_productivity is legitimate (known before the day starts) but
+    is not a model feature. NEVER use productivity_score, productivity_level
+    or productive_day as an input.
+
+EXPERIMENT-ONLY COLUMNS (do not exist in the production app)
+    person_id, date, previous_day_productivity.
+"""
+
+import argparse
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+from ml.settings import DATASET_PATH, LEVEL_BINS, LEVELS
+
+# ----------------------------- defaults ------------------------------------
+DEFAULT_SEED = 42
+DEFAULT_ROWS = 2_000
+N_PEOPLE = 20
+DEFAULT_THRESHOLD = 60.0   # productive_day = score >= this
+MISSING_RATE = 0.03        # per selected column
+OUTLIER_RATE = 0.005       # per row
+MISSING_COLUMNS = ["sleep_hours", "caffeine_level", "task_difficulty", "free_hours"]
+MG_PER_POINT = 40          # caffeine: 40 mg = 1 point, 400 mg = 10, 300 mg = 7.5
+
+DEEP_WORK_GOAL = 3.0       # hours; same as the app's "Deep work 3h+" habit
+STREAK_CAP = 14            # log_streak is capped so it stays a bounded feature
+STAY_LOGGING = 0.90        # P(log today | logged yesterday)
+RESUME_LOGGING = 0.40      # P(log today | missed yesterday)
+DAYS_MARGIN = 1.5          # simulate extra calendar days, missed days are dropped
+
+BASE_SCORE = 43            # overall level of the score formula
+
+DEFAULT_OUTPUT = DATASET_PATH
+
+
+def simulate_person(rng, n_days, start_date):
+    """Return a DataFrame of features for one person (no score yet).
+
+    Every calendar day is simulated; the `logged` column says which days the
+    person actually logged. Unlogged days are dropped later in generate().
+    """
+    dates = pd.date_range(start_date, periods=n_days, freq="D")
+    dow = dates.dayofweek.to_numpy()          # 0 = Monday ... 6 = Sunday
+    weekend = (dow >= 5).astype(float)
+
+    # Personal baselines
+    base_sleep = rng.normal(7.0, 0.5)
+    base_deep = rng.normal(3.5, 0.8)
+    base_stress = rng.normal(5.0, 0.8)
+    base_journal = rng.normal(0.0, 0.12)      # some people journal more
+
+    # Logging behaviour: who logged on which day, and the streak ending yesterday
+    logged = np.empty(n_days, dtype=bool)
+    logged[0] = True
+    for t in range(1, n_days):
+        p = STAY_LOGGING if logged[t - 1] else RESUME_LOGGING
+        logged[t] = rng.random() < p
+    streak_raw = np.zeros(n_days)
+    for t in range(1, n_days):
+        streak_raw[t] = streak_raw[t - 1] + 1 if logged[t - 1] else 0
+    streak = np.minimum(streak_raw, STREAK_CAP)
+
+    # Day type: weekends are mostly free days, weekdays mostly class days
+    u = rng.random(n_days)
+    day_type = np.where(
+        weekend == 1,
+        np.where(u < 0.10, "class", np.where(u < 0.80, "free", "deadline")),
+        np.where(u < 0.60, "class", np.where(u < 0.75, "free", "deadline")),
+    )
+    is_class = day_type == "class"
+    is_free = day_type == "free"
+    is_deadline = (day_type == "deadline").astype(float)
+
+    # Free hours available for work, set mainly by the day type
+    free_mean = np.select([is_class, is_free], [5.0, 9.0], default=6.0)
+    free = np.clip(free_mean + rng.normal(0, 1.5, n_days), 0, 14)
+
+    # Task difficulty (1-5): harder on deadline days
+    difficulty = np.clip(np.round(2.8 + 0.8 * is_deadline + rng.normal(0, 1.0, n_days)), 1, 5)
+
+    # Stress: AR(1) so consecutive days are related, plus deadline and difficulty
+    stress_ar = np.empty(n_days)
+    stress_ar[0] = base_stress
+    for t in range(1, n_days):
+        stress_ar[t] = (
+            base_stress + 0.8 * (stress_ar[t - 1] - base_stress) + rng.normal(0, 0.9)
+        )
+    stress = np.clip(np.round(stress_ar + 1.2 * is_deadline + 0.4 * (difficulty - 3)), 1, 10)
+
+    # Disruptions (meetings, interruptions): fewer on weekends
+    lam = np.select([is_class, is_free], [1.5, 0.8], default=1.2) * (1 - 0.3 * weekend)
+    disruptions = np.clip(rng.poisson(lam), 0, 8).astype(float)
+
+    # Deep work (hours): limited by free hours, cut by disruptions and hard tasks
+    deep_work = (
+        base_deep * (0.7 + 0.3 * free / 6)
+        - 0.35 * disruptions
+        - 0.25 * (difficulty - 3)
+        + rng.gamma(2.0, 0.6, n_days) - 1.2
+    )
+    deep_work = np.clip(deep_work, 0, free)
+    deep_work[rng.random(n_days) < 0.06] = 0.0     # occasional zero-work days
+    deep_work = np.clip(deep_work, 0, 14)
+
+    # Journaling: less likely on stressful days
+    p_journal = np.clip(0.55 + base_journal - 0.05 * (stress - 5), 0.05, 0.95)
+    journaled = (rng.random(n_days) < p_journal).astype(float)
+
+    # Junk food: more likely when stressed and on weekends
+    p_junk = np.clip(0.25 + 0.05 * (stress - 5) + 0.05 * weekend, 0.05, 0.80)
+    junk_food = (rng.random(n_days) < p_junk).astype(float)
+
+    # Sleep: weekends longer, stress shortens it
+    sleep = (
+        base_sleep + 0.6 * weekend - 0.18 * (stress - 5) + rng.normal(0, 0.9, n_days)
+    )
+    sleep = np.clip(sleep, 3.0, 11.5)
+
+    # Caffeine (mg): rises with deep work and short sleep, some people drink none
+    caffeine = 60 + 22 * deep_work + 25 * np.clip(7.5 - sleep, 0, None) + rng.normal(0, 55, n_days)
+    caffeine[rng.random(n_days) < 0.12] = 0.0
+    caffeine = np.clip(caffeine, 0, 600)
+
+    # Weather: independent of everything else, only a tiny effect on the score
+    weather = rng.choice(["sunny", "cloudy", "rainy"], size=n_days, p=[0.5, 0.3, 0.2])
+
+    # Deep-work goal days among the previous 7 calendar days (today excluded).
+    # A day counts only if it was logged AND met the goal.
+    met = pd.Series(((deep_work >= DEEP_WORK_GOAL) & logged).astype(float))
+    prev7 = met.shift(1).rolling(7, min_periods=1).sum().fillna(0).to_numpy()
+
+    return pd.DataFrame(
+        {
+            "date": dates,
+            "day_of_week": dow,
+            "logged": logged,
+            "deep_work": deep_work,
+            "sleep_hours": sleep,
+            "caffeine_mg": caffeine,          # renamed to caffeine_level in generate()
+            "stress_level": stress,
+            "journaled": journaled,
+            "log_streak": streak,
+            "disruptions": disruptions,
+            "junk_food": junk_food,
+            "task_difficulty": difficulty,
+            "deep_work_days_prev7": prev7,
+            "day_type": day_type,
+            "weather": weather,
+            "free_hours": free,
+        }
+    )
+
+
+def add_outliers(df, rng):
+    """Replace a few rows' values with extreme but still valid numbers."""
+    hit = rng.random(len(df)) < OUTLIER_RATE
+    n = int(hit.sum())
+    if n == 0:
+        return df
+    choices = rng.integers(0, 4, size=n)
+    idx = df.index[hit]
+    for i, c in zip(idx, choices):
+        if c == 0:
+            df.at[i, "deep_work"] = rng.uniform(12, 18)
+        elif c == 1:
+            df.at[i, "caffeine_mg"] = rng.uniform(600, 900)
+        elif c == 2:
+            df.at[i, "sleep_hours"] = rng.uniform(1.5, 3.0)
+        else:
+            df.at[i, "disruptions"] = rng.integers(10, 16)
+    return df
+
+
+def compute_score(df, rng, person_effect):
+    """Sequentially compute the score so each day can depend on the previous one."""
+    n = len(df)
+    score = np.empty(n)
+    prev = np.empty(n)
+
+    deep = df["deep_work"].to_numpy()
+    sleep = df["sleep_hours"].to_numpy()
+    caffeine = df["caffeine_mg"].to_numpy()        # still in mg here
+    stress = df["stress_level"].to_numpy()
+    journaled = df["journaled"].to_numpy()
+    streak = df["log_streak"].to_numpy()
+    disruptions = df["disruptions"].to_numpy()
+    junk = df["junk_food"].to_numpy()
+    difficulty = df["task_difficulty"].to_numpy()
+    prev7 = df["deep_work_days_prev7"].to_numpy()
+    day_type = df["day_type"].to_numpy()
+    weather = df["weather"].to_numpy()
+    free = df["free_hours"].to_numpy()
+
+    # Nonlinear effects (all vectorised)
+    sleep_eff = 16 * np.exp(-((sleep - 7.5) / 1.6) ** 2) - 8
+    deep_eff = 11 * (1 - np.exp(-deep / 2.5)) - 0.9 * np.clip(deep - 8, 0, None) ** 2
+    caffeine_eff = 3 * np.exp(-((caffeine - 150) / 120) ** 2) - 0.015 * np.clip(caffeine - 350, 0, None)
+    stress_eff = -2.2 * (stress - 5) - 0.6 * np.clip(stress - 8, 0, None) ** 2
+    journal_eff = 3.0 * journaled
+
+    # New features
+    use_eff = 4.0 * np.clip(deep / np.maximum(free, 1.0), 0, 1)       # used free time well
+    disruption_eff = -1.5 * np.minimum(disruptions, 6)
+    junk_eff = -2.0 * junk
+    difficulty_eff = -1.0 * (difficulty - 3)
+    streak_eff = 0.3 * streak                                          # max +4.2
+    prev7_eff = 0.6 * prev7 - 0.5 * np.clip(prev7 - 5, 0, None) ** 2  # fades past 5 (burnout)
+    day_type_eff = np.select(
+        [day_type == "free", day_type == "deadline"], [-1.5, 1.0], default=0.0
+    )
+    weather_eff = np.select(
+        [weather == "sunny", weather == "rainy"], [0.8, -0.8], default=0.0
+    )
+
+    static = (
+        BASE_SCORE + person_effect
+        + sleep_eff + deep_eff + caffeine_eff + stress_eff + journal_eff
+        + use_eff + disruption_eff + junk_eff + difficulty_eff
+        + streak_eff + prev7_eff + day_type_eff + weather_eff
+    )
+
+    prev_score = 50.0 + person_effect          # day 0 has no real "yesterday"
+    for t in range(n):
+        prev[t] = prev_score
+        s = static[t] + 0.25 * (prev_score - 55) + rng.normal(0, 6)
+        score[t] = np.clip(s, 0, 100)
+        prev_score = score[t]
+    return score, prev
+
+
+def generate(rows, seed, threshold):
+    rng = np.random.default_rng(seed)
+    rows_per_person = int(np.ceil(rows / N_PEOPLE))
+    days_each = int(np.ceil(rows_per_person * DAYS_MARGIN))
+    frames = []
+
+    for pid in range(1, N_PEOPLE + 1):
+        person_df = simulate_person(rng, days_each, "2024-01-01")
+        person_df = add_outliers(person_df.reset_index(drop=True), rng)
+
+        # Keep values inside the same limits the app's forms will enforce
+        person_df["deep_work"] = person_df["deep_work"].clip(0, 24)
+        person_df["sleep_hours"] = person_df["sleep_hours"].clip(0, 24)
+        person_df["caffeine_mg"] = person_df["caffeine_mg"].clip(0, 1000)
+
+        person_effect = rng.normal(0, 4)
+        score, prev = compute_score(person_df, rng, person_effect)
+        person_df["productivity_score"] = score
+        person_df["previous_day_productivity"] = prev
+
+        # Yesterday is only known if it was a logged day
+        person_df.loc[0, "previous_day_productivity"] = np.nan
+        yesterday_missing = ~person_df["logged"].shift(1, fill_value=False)
+        person_df.loc[yesterday_missing, "previous_day_productivity"] = np.nan
+
+        # Drop the days this person did not log, keep a fixed number of rows
+        person_df = person_df[person_df["logged"]].drop(columns="logged")
+        person_df = person_df.head(rows_per_person)
+        person_df.insert(0, "person_id", pid)
+        frames.append(person_df)
+
+    df = pd.concat(frames, ignore_index=True).iloc[:rows].copy()
+
+    # Convert caffeine from mg (used by the score formula) to the app's 0-10 scale
+    df["caffeine_level"] = (df["caffeine_mg"] / MG_PER_POINT).clip(0, 10)
+    df = df.drop(columns="caffeine_mg")
+
+    # Rounding to realistic precision
+    for col in ["deep_work", "sleep_hours", "caffeine_level", "free_hours"]:
+        df[col] = df[col].round(1)
+    for col in ["stress_level", "journaled", "log_streak", "disruptions",
+                "junk_food", "task_difficulty", "deep_work_days_prev7", "day_of_week"]:
+        df[col] = df[col].astype(int)
+    df["productivity_score"] = df["productivity_score"].round(1)
+    df["previous_day_productivity"] = df["previous_day_productivity"].round(1)
+
+    # Labels are derived BEFORE masking so they reflect the true score
+    df["productive_day"] = (df["productivity_score"] >= threshold).astype(int)
+    df["productivity_level"] = pd.cut(
+        df["productivity_score"], bins=LEVEL_BINS, labels=LEVELS
+    ).astype(str)
+
+    # Missing values in selected INPUT columns only (never in targets)
+    for col in MISSING_COLUMNS:
+        mask = rng.random(len(df)) < MISSING_RATE
+        df.loc[mask, col] = np.nan
+
+    df["date"] = df["date"].dt.strftime("%Y-%m-%d")
+
+    cols = [
+        "person_id", "date", "day_of_week",
+        "deep_work", "sleep_hours", "caffeine_level", "stress_level",
+        "journaled", "log_streak", "disruptions", "junk_food",
+        "task_difficulty", "deep_work_days_prev7", "day_type", "weather",
+        "free_hours", "previous_day_productivity",
+        "productivity_score", "productivity_level", "productive_day",
+    ]
+    return df[cols]
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Generate the synthetic PPIA dataset.")
+    parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
+    parser.add_argument("--rows", type=int, default=DEFAULT_ROWS)
+    parser.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD)
+    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    args = parser.parse_args()
+
+    df = generate(args.rows, args.seed, args.threshold)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(args.output, index=False)
+
+    print(f"Saved {len(df)} rows to {args.output}")
+    print(f"Seed: {args.seed} | productive threshold: {args.threshold}")
+    print(f"Productive-day share: {df['productive_day'].mean():.1%}")
+    print("Level shares:")
+    print(df["productivity_level"].value_counts(normalize=True)
+          .reindex(LEVELS).map("{:.1%}".format).to_string())
+    print("Missing values per column:")
+    print(df.isna().sum()[lambda s: s > 0].to_string())
+
+
+if __name__ == "__main__":
+    main()
+
+===== ml/evaluate.py =====
+
+"""Evaluate the saved models on the hold-out people and explain them.
+
+Run from the project root, after `python -m ml.train`:
+    python -m ml.evaluate
+
+Writes to artifacts/figures/ and artifacts/evaluation_report.md:
+    confusion_matrix.png          which levels get confused with which
+    regression_pred_vs_actual.png predicted vs real score on unseen people
+    permutation_importance.png    what each model relies on
+    partial_dependence.png        how the predicted score moves with each input
+
+READ THIS BEFORE QUOTING ANY NUMBER
+    * The data is synthetic: results show how well the models recover the rules
+      in dummydataset.py, not how well they predict real people.
+    * Importance / partial dependence describe the MODEL, not cause and effect.
+    * With only a few hold-out people the numbers are noisy; the report says so.
+"""
+import json
+
+import joblib
+import matplotlib
+
+matplotlib.use("Agg")  # draw to files, no window needed
+import matplotlib.pyplot as plt
+import numpy as np
+from sklearn.inspection import PartialDependenceDisplay, permutation_importance
+from sklearn.metrics import (ConfusionMatrixDisplay, mean_absolute_error,
+                             r2_score, roc_auc_score)
+
+from ml.settings import (ARTIFACT_DIR, CLASSIFICATION_TARGET, FEATURES, LEVELS,
+                         RANDOM_STATE, REGRESSION_TARGET)
+from ml.train import load_data, split_data
+
+FIG_DIR = ARTIFACT_DIR / "figures"
+
+
+def main() -> None:
+    for name in ("regressor.joblib", "classifier.joblib", "metadata.json"):
+        if not (ARTIFACT_DIR / name).exists():
+            raise SystemExit("Models not found. Run: python -m ml.train")
+
+    reg = joblib.load(ARTIFACT_DIR / "regressor.joblib")
+    clf = joblib.load(ARTIFACT_DIR / "classifier.joblib")
+    meta = json.loads((ARTIFACT_DIR / "metadata.json").read_text())
+
+    _, test_df = split_data(load_data())
+    if test_df is None:
+        raise SystemExit("Dataset too small for a hold-out set (< 100 rows).")
+    FIG_DIR.mkdir(parents=True, exist_ok=True)
+
+    X = test_df[FEATURES]
+    y_reg = test_df[REGRESSION_TARGET]
+    y_clf = test_df[CLASSIFICATION_TARGET].map({n: i for i, n in enumerate(LEVELS)})
+
+    # ---- regression ----
+    pred = np.clip(reg.predict(X), 0, 100)
+    r2, mae = r2_score(y_reg, pred), mean_absolute_error(y_reg, pred)
+    fig, ax = plt.subplots(figsize=(5.5, 5.5))
+    ax.scatter(y_reg, pred, s=6, alpha=0.35)
+    ax.plot([0, 100], [0, 100], "k--", lw=1)
+    ax.set(xlabel="actual score", ylabel="predicted score",
+           title=f"Unseen people: R2={r2:.2f}, MAE={mae:.1f}")
+    fig.tight_layout()
+    fig.savefig(FIG_DIR / "regression_pred_vs_actual.png", dpi=130)
+    plt.close(fig)
+
+    # ---- classification ----
+    pred_c = clf.predict(X)
+    fig, ax = plt.subplots(figsize=(5.5, 4.8))
+    ConfusionMatrixDisplay.from_predictions(
+        y_clf, pred_c, labels=list(range(len(LEVELS))), display_labels=LEVELS,
+        normalize="true", values_format=".0%", ax=ax, colorbar=False)
+    ax.set_title("Confusion matrix (share of each true level)")
+    fig.tight_layout()
+    fig.savefig(FIG_DIR / "confusion_matrix.png", dpi=130)
+    plt.close(fig)
+    auc = roc_auc_score(y_clf, clf.predict_proba(X), multi_class="ovr",
+                        average="macro", labels=list(range(len(LEVELS))))
+
+    # ---- permutation importance (on hold-out, 15 shuffles) ----
+    imp_r = permutation_importance(reg, X, y_reg, scoring="neg_mean_absolute_error",
+                                   n_repeats=15, random_state=RANDOM_STATE)
+    imp_c = permutation_importance(clf, X, y_clf, scoring="f1_macro",
+                                   n_repeats=15, random_state=RANDOM_STATE)
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4))
+    for ax, imp, title in ((axes[0], imp_r, "Regression: MAE increase when shuffled"),
+                           (axes[1], imp_c, "Classification: macro-F1 drop when shuffled")):
+        order = np.argsort(imp.importances_mean)
+        ax.barh(np.array(FEATURES)[order], imp.importances_mean[order],
+                xerr=imp.importances_std[order])
+        ax.set_title(title)
+    fig.tight_layout()
+    fig.savefig(FIG_DIR / "permutation_importance.png", dpi=130)
+    plt.close(fig)
+
+    # ---- partial dependence of the regressor ----
+    fig, ax = plt.subplots(figsize=(13, 3.6))
+    # Newer scikit-learn refuses integer columns here, so plot from a float copy.
+    PartialDependenceDisplay.from_estimator(reg, X.astype(float), FEATURES, ax=ax, grid_resolution=25)
+    fig.suptitle("Partial dependence of predicted score (model behaviour, not causation)")
+    fig.tight_layout()
+    fig.savefig(FIG_DIR / "partial_dependence.png", dpi=130)
+    plt.close(fig)
+
+    # ---- markdown report ----
+    split = meta["split"]
+    lines = [
+        "# Evaluation report (synthetic data)",
+        "",
+        meta["disclaimer"],
+        "",
+        f"Hold-out: {split.get('test_people', '?')} people never seen in training "
+        f"({split['test_rows']} rows). {split.get('warning', '')}",
+        "",
+        f"## Regression ({meta['regression']['selected']})",
+        f"- Hold-out R2 = {r2:.3f}, MAE = {mae:.2f} points (score range 0-100)",
+        "- Cross-validated numbers (more stable) are in metadata.json under "
+        "regression.candidates",
+        "",
+        f"## Classification ({meta['classification']['selected']})",
+        f"- Hold-out accuracy = {np.mean(pred_c == y_clf):.3f}, "
+        f"macro one-vs-rest ROC-AUC = {auc:.3f}",
+        "- Read confusion_matrix.png: the 'low' level is rare, so expect it to be "
+        "the hardest class.",
+        "",
+        "## Permutation importance (hold-out)",
+        "| feature | regression MAE increase | classification F1 drop |",
+        "|---|---|---|",
+    ]
+    for i in np.argsort(-imp_r.importances_mean):
+        lines.append(f"| {FEATURES[i]} | {imp_r.importances_mean[i]:.3f} | "
+                     f"{imp_c.importances_mean[i]:.3f} |")
+    lines += ["", "Importance describes what the fitted model uses. It is not causal "
+              "and correlated features share credit.", ""]
+    (ARTIFACT_DIR / "evaluation_report.md").write_text("\n".join(lines), encoding="utf-8")
+
+    print("\n".join(lines))
+    print(f"Figures saved in {FIG_DIR}")
+
+
+if __name__ == "__main__":
+    main()
+
+===== ml/predict.py =====
+
+"""Load the saved models and make predictions.
+
+Flask-free on purpose. From the web app:
+
+    from ml.predict import predict_day
+    result = predict_day({"deep_work": 4, "sleep_hours": 7, ..., "day_type": "class"})
+
+predict_day needs ALL of settings.FEATURES. Numbers are range-checked; text
+features (day_type, weather) must be one of the values seen in training.
+The app-side code that turns a database row into these inputs lives in
+app/insights/service.py.
+
+Quick test from the project root:
+    python -m ml.predict
+
+SECURITY: the .joblib files are pickles. Only load files this project trained.
+"""
+import json
+import math
+
+import joblib
+import pandas as pd
+
+import ml.settings as settings
+from ml.settings import ARTIFACT_DIR, FEATURES, LEVELS
+
+# Allowed range of every numeric input. settings.FEATURE_RANGES (if present)
+# overrides these, but a feature can no longer slip through unchecked just
+# because settings.py is out of date.
+DEFAULT_RANGES = {
+    "deep_work": (0, 24),
+    "sleep_hours": (0, 24),
+    "caffeine_level": (0, 10),
+    "stress_level": (1, 10),
+    "journaled": (0, 1),
+    "log_streak": (0, 14),
+    "disruptions": (0, 20),
+    "junk_food": (0, 1),
+    "task_difficulty": (1, 5),
+    "deep_work_days_prev7": (0, 7),
+    "free_hours": (0, 24),
+}
+FEATURE_RANGES = {**DEFAULT_RANGES, **getattr(settings, "FEATURE_RANGES", {})}
+
+DISCLAIMER = (
+    "Experimental: trained on synthetic (simulated) data. This is an estimate "
+    "for the day described by these inputs, not a forecast for tomorrow and "
+    "not a statement about you."
+)
+
+_cache = {}
+
+
+class ModelsNotTrainedError(RuntimeError):
+    pass
+
+
+def _load():
+    """Load models once, then reuse them for every request."""
+    if _cache:
+        return _cache
+    try:
+        _cache["regressor"] = joblib.load(ARTIFACT_DIR / "regressor.joblib")
+        _cache["classifier"] = joblib.load(ARTIFACT_DIR / "classifier.joblib")
+        _cache["kmeans"] = joblib.load(ARTIFACT_DIR / "kmeans.joblib")
+        _cache["profiles"] = pd.read_csv(
+            ARTIFACT_DIR / "cluster_profiles.csv", index_col="cluster")
+        with open(ARTIFACT_DIR / "metadata.json") as f:
+            _cache["metadata"] = json.load(f)
+    except FileNotFoundError as exc:
+        _cache.clear()
+        raise ModelsNotTrainedError(
+            "Models not found. Run: python -m ml.train") from exc
+    return _cache
+
+
+def reload_models() -> None:
+    """Forget cached models (call after retraining without restarting Flask)."""
+    _cache.clear()
+
+
+def _validate(values: dict, meta: dict) -> pd.DataFrame:
+    """Check one day's inputs and return a one-row DataFrame in FEATURES order."""
+    missing = [f for f in FEATURES if f not in values]
+    if missing:
+        raise ValueError(f"Missing inputs: {missing}")
+
+    # The models were trained on these exact columns. If settings.FEATURES
+    # changed after training, stop instead of predicting from the wrong inputs.
+    trained = meta.get("features")
+    if trained is not None and list(trained) != list(FEATURES):
+        raise ValueError(
+            "settings.FEATURES differs from the trained models. "
+            "Retrain: python -m ml.train")
+
+    categories = meta.get("categories", {})
+    cat = set(meta.get("categorical_features", []))
+    row = {}
+    for name in FEATURES:
+        raw = values[name]
+        if name in cat:
+            text = "" if raw is None else str(raw)
+            allowed = categories.get(name)
+            if allowed and text not in allowed:
+                raise ValueError(
+                    f"'{name}' must be one of: {', '.join(allowed)}")
+            row[name] = text
+            continue
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            raise ValueError(f"'{name}' must be a number")
+        if math.isnan(value):
+            raise ValueError(f"'{name}' must be a number")
+        bounds = FEATURE_RANGES.get(name)
+        if bounds is not None:
+            low, high = bounds
+            if not low <= value <= high:
+                raise ValueError(f"'{name}' must be between {low} and {high}")
+        row[name] = value
+    return pd.DataFrame([row], columns=FEATURES)  # fixed column order
+
+
+def predict_day(values: dict) -> dict:
+    """Predict score, level and behaviour cluster for one day."""
+    models = _load()
+    meta = models["metadata"]
+    X = _validate(values, meta)
+
+    score = float(models["regressor"].predict(X)[0])
+    score = round(min(max(score, 0.0), 100.0), 1)
+
+    clf = models["classifier"]
+    class_id = int(clf.predict(X)[0])
+    probs = clf.predict_proba(X)[0]
+    cluster = int(models["kmeans"].predict(X)[0])
+
+    reg_meta = meta.get("regression") or {}
+    # Typical error = cross-validated MAE of the selected model (steadier than
+    # a hold-out made of only a few people).
+    cv_mae = next((c["cv_mae"] for c in reg_meta.get("candidates", [])
+                   if c["model"] == reg_meta.get("selected")), None)
+    return {
+        "predicted_score": score,
+        "predicted_level": LEVELS[class_id],
+        "level_probabilities": {
+            LEVELS[int(c)]: round(float(p), 3)
+            for c, p in zip(clf.classes_, probs)
+        },
+        "cluster": cluster,
+        "cluster_profile": models["profiles"].loc[cluster].to_dict(),
+        "typical_error_points": cv_mae,
+        "model_version": meta.get("model_version"),
+        "experimental": True,
+        "disclaimer": DISCLAIMER,
+    }
+
+
+# What-if levers: (feature, value to try, wording). suggest_levers() re-runs the
+# regressor with one input changed and reports how much the estimate moves.
+# This is what the MODEL does, not proof that the change causes anything.
+LEVERS = [
+    ("sleep_hours", 7.5, "Sleep about 7.5 h"),
+    ("deep_work", 4, "Reach about 4 h of deep work"),
+    ("stress_level", 3, "Bring stress down to 3"),
+    ("disruptions", 0, "Have no disruptions"),
+    ("junk_food", 0, "Skip junk food"),
+    ("journaled", 1, "Journal today"),
+    ("caffeine_level", 3, "Keep caffeine around level 3"),
+]
+
+
+def suggest_levers(values: dict, top: int = 3, min_gain: float = 0.5) -> list:
+    """Biggest single changes (by the model) that would raise the score."""
+    models = _load()
+    meta = models["metadata"]
+    base = _validate(values, meta)
+
+    rows, info = [], []
+    for feature, target, text in LEVERS:
+        if feature not in FEATURES:
+            continue
+        try:
+            if float(values[feature]) == target:
+                continue
+        except (TypeError, ValueError, KeyError):
+            continue
+        rows.append(_validate({**values, feature: target}, meta))
+        info.append((feature, text))
+    if not rows:
+        return []
+
+    preds = models["regressor"].predict(pd.concat([base] + rows, ignore_index=True))
+    found = []
+    for (feature, text), p in zip(info, preds[1:]):
+        gain = float(p - preds[0])
+        if gain >= min_gain:
+            found.append({"feature": feature, "text": text, "gain": round(gain, 1)})
+    return sorted(found, key=lambda d: -d["gain"])[:top]
+
+
+def predict_for_log(log) -> dict:
+    """Predict from any object whose attributes are named like FEATURES.
+
+    This does NOT work on a raw ProductivityLog (its column names differ and
+    two features are computed from past days). For the app use
+    app.insights.service.latest_estimate instead.
+    """
+    values = {name: getattr(log, name, None) for name in FEATURES}
+    missing = [name for name, v in values.items() if v is None]
+    if missing:
+        raise ValueError("This log is missing: " + ", ".join(missing))
+    values = {name: int(v) if isinstance(v, bool) else v
+              for name, v in values.items()}
+    return predict_day(values)
+
+
+def data_stage(n_logs: int) -> str:
+    """How much of the user's own data exists decides what the app may claim.
+
+    No stage means "a model trained on you": there is no per-user model.
+    """
+    if n_logs < 7:
+        return "general"            # only the synthetic-trained estimate
+    if n_logs < 20:
+        return "descriptive"        # also show the user's own averages
+    return "enough_for_trends"      # enough rows to show trends from their logs
+
+
+def model_info() -> dict:
+    """Metrics, split and feature importance, for an ML Insights page."""
+    return _load()["metadata"]
+
+
+if __name__ == "__main__":
+    example = {
+        "deep_work": 4, "sleep_hours": 7.5, "caffeine_level": 3,
+        "stress_level": 4, "journaled": 1, "log_streak": 3,
+        "disruptions": 1, "junk_food": 0, "task_difficulty": 3,
+        "deep_work_days_prev7": 4, "day_type": "class", "weather": "sunny",
+        "free_hours": 6,
+    }
+    print(json.dumps(predict_day(example), indent=2))
+
+===== ml/settings.py =====
+
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+DATASET_PATH = ROOT / "datasets" / "productivity_logs.csv"
+ARTIFACT_DIR = ROOT / "artifacts"
+
+RANDOM_STATE = 42
+
+FEATURES = [
+       "deep_work", "sleep_hours", "caffeine_level", "stress_level",
+       "journaled", "log_streak", "disruptions", "junk_food",
+       "task_difficulty", "deep_work_days_prev7", "day_type", "weather",
+       "free_hours",
+]
+
+REGRESSION_TARGET = "productivity_score"
+CLASSIFICATION_TARGET = "productivity_level"
+
+LEVELS = ["low", "medium", "high"]
+LEVEL_BINS = [-0.1, 45, 70, 100.1]
+
+FEATURE_RANGES = {
+    "study_hours": (0, 24),
+    "caffeine_mg": (0, 10),
+    "stress_level": (1, 10),
+    "study_sessions": (0, 50),
+    "journaled": (0, 1),
+}
+
+N_CLUSTERS_RANGE = range(2, 8)
+
+===== ml/train.py =====
+
+"""Train, compare and save the three models.
+
+Run from the project root:
+    python -m ml.train
+
+Saves to artifacts/:
+    regressor.joblib, classifier.joblib, kmeans.joblib,
+    metadata.json, cluster_profiles.csv
+
+FEATURE TYPES
+    FEATURES (in ml/settings.py) may mix numbers and text. Any feature whose
+    column is not numeric in the data (day_type, weather) is one-hot encoded
+    inside each model's pipeline; numbers are scaled for the linear models and
+    clustering. Because the encoding is part of the saved pipeline, a
+    prediction needs a one-row DataFrame with the FEATURES column names
+    (not a plain list or array).
+
+VALIDATION (what changed vs the first version)
+    Rows from the same person are strongly related (the score carries momentum
+    from the previous day). A shuffled split would put the same person in both
+    train and test and flatter the metrics. So when the dataset has a
+    person_id column:
+        * the hold-out set is made of WHOLE PEOPLE the model never saw
+          (GroupShuffleSplit), which also matches the app's cold-start case:
+          a brand-new user the model has never met
+        * cross-validation uses GroupKFold (same idea inside the training part)
+    Without person_id (e.g. real logs later) it falls back to the old
+    shuffled/stratified behaviour.
+
+    rows < SMALL_N       : no hold-out, repeated k-fold CV only, no XGBoost
+    rows >= SMALL_N      : 80/20 hold-out + 5-fold CV on the training part
+    rows >= XGB_MIN_ROWS : XGBoost joins the candidates
+
+The winner is chosen on CROSS-VALIDATION scores only. Hold-out numbers are
+reported, never used to choose.
+"""
+import json
+import platform
+from datetime import datetime, timezone
+
+import joblib
+import numpy as np
+import pandas as pd
+import sklearn
+from pandas.api.types import is_numeric_dtype
+from sklearn.cluster import KMeans
+from sklearn.compose import ColumnTransformer
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.linear_model import LogisticRegression, Ridge
+from sklearn.metrics import (accuracy_score, classification_report,
+                             confusion_matrix, f1_score, mean_absolute_error,
+                             mean_squared_error, r2_score, silhouette_score)
+from sklearn.model_selection import (GroupKFold, GroupShuffleSplit, KFold,
+                                     RepeatedKFold, RepeatedStratifiedKFold,
+                                     StratifiedKFold, cross_validate,
+                                     train_test_split)
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+
+from ml.settings import (ARTIFACT_DIR, CLASSIFICATION_TARGET, DATASET_PATH,
+                         FEATURES, LEVELS, N_CLUSTERS_RANGE, RANDOM_STATE,
+                         REGRESSION_TARGET)
+
+try:  # XGBoost is optional; skip it cleanly if it is not installed.
+    from xgboost import XGBClassifier, XGBRegressor
+    HAS_XGB = True
+except ImportError:
+    HAS_XGB = False
+
+SMALL_N = 100        # below this: no hold-out, repeated CV only
+XGB_MIN_ROWS = 300   # XGBoost only competes at or above this many rows
+GROUP_COL = "person_id"
+TEST_SIZE = 0.2
+
+DISCLAIMER = ("Trained on synthetic (simulated) data. Metrics show how well the "
+              "models recover the rules written in dummydataset.py, not how well "
+              "they would predict a real person.")
+
+
+# Columns that must never be model inputs (they are, or come from, the answer).
+LEAKY = {"productivity_score", "productivity_level", "productive_day",
+         "previous_day_productivity"}
+
+
+# ------------------------------------------------------ feature preprocessing
+def split_feature_types(df: pd.DataFrame):
+    """Return (numeric, categorical) lists, in FEATURES order.
+
+    A feature is categorical when its column is not numeric in the data
+    (day_type, weather). Those are one-hot encoded; the rest are numbers.
+    """
+    cat = [c for c in FEATURES if not is_numeric_dtype(df[c])]
+    num = [c for c in FEATURES if c not in cat]
+    return num, cat
+
+
+def make_prep(num, cat, scale: bool) -> ColumnTransformer:
+    """Numbers are scaled (linear models / clustering) or passed through
+    (trees); categoricals are one-hot encoded. Unknown categories at
+    prediction time become all zeros instead of crashing."""
+    parts = [("num", StandardScaler() if scale else "passthrough", num)]
+    if cat:
+        parts.append(("cat", OneHotEncoder(handle_unknown="ignore",
+                                           sparse_output=False), cat))
+    return ColumnTransformer(parts)
+
+
+def _original_feature(name: str, cat) -> str:
+    """'cat__day_type_class' -> 'day_type', 'num__deep_work' -> 'deep_work'."""
+    name = name.split("__", 1)[-1]
+    for c in cat:
+        if name.startswith(c + "_"):
+            return c
+    return name
+
+
+def feature_importance(model, cat):
+    """Tree importances summed back to the original features (one-hot
+    columns of day_type are added up into a single 'day_type' value)."""
+    est = model.named_steps["model"]
+    if not hasattr(est, "feature_importances_"):
+        return None
+    names = model.named_steps["prep"].get_feature_names_out()
+    out = {}
+    for n, v in zip(names, est.feature_importances_):
+        k = _original_feature(n, cat)
+        out[k] = out.get(k, 0.0) + float(v)
+    return {k: round(v, 4) for k, v in sorted(out.items(), key=lambda kv: -kv[1])}
+
+
+def linear_coefficients(model):
+    """Standardised coefficients of a linear regressor (sign = direction)."""
+    est = model.named_steps["model"]
+    if not hasattr(est, "coef_") or np.ndim(est.coef_) != 1:
+        return None
+    names = model.named_steps["prep"].get_feature_names_out()
+    pairs = {n.split("__", 1)[-1]: round(float(c), 4)
+             for n, c in zip(names, est.coef_)}
+    return dict(sorted(pairs.items(), key=lambda kv: -abs(kv[1])))
+
+
+# --------------------------------------------------------------------- data
+def load_data() -> pd.DataFrame:
+    if not DATASET_PATH.exists():
+        raise SystemExit(
+            f"Dataset not found at {DATASET_PATH}.\n"
+            "Generate it first:  python -m ml.dummydataset --rows 10000"
+        )
+    leaky = sorted(LEAKY & set(FEATURES))
+    if leaky:
+        raise SystemExit(f"FEATURES must not contain answer columns: {leaky}")
+    df = pd.read_csv(DATASET_PATH)
+    needed = FEATURES + [REGRESSION_TARGET, CLASSIFICATION_TARGET]
+    missing = [c for c in needed if c not in df.columns]
+    if missing:
+        raise SystemExit(f"Dataset is missing columns: {missing}")
+    return df.dropna(subset=needed).reset_index(drop=True)
+
+
+def split_data(df: pd.DataFrame):
+    """Return (train_df, test_df). test_df is None in small-data mode.
+
+    Deterministic (fixed RANDOM_STATE) so evaluate.py rebuilds the same split.
+    """
+    if len(df) < SMALL_N:
+        return df, None
+    if GROUP_COL in df.columns:
+        splitter = GroupShuffleSplit(n_splits=1, test_size=TEST_SIZE,
+                                     random_state=RANDOM_STATE)
+        train_idx, test_idx = next(splitter.split(df, groups=df[GROUP_COL]))
+        return df.iloc[train_idx].reset_index(drop=True), \
+            df.iloc[test_idx].reset_index(drop=True)
+    train_df, test_df = train_test_split(
+        df, test_size=TEST_SIZE, random_state=RANDOM_STATE,
+        stratify=df[CLASSIFICATION_TARGET])
+    return train_df.reset_index(drop=True), test_df.reset_index(drop=True)
+
+
+def split_description(train_df, test_df) -> dict:
+    grouped = GROUP_COL in train_df.columns
+    desc = {
+        "method": ("hold-out of whole people (GroupShuffleSplit) + GroupKFold CV"
+                   if grouped and test_df is not None else
+                   "no hold-out; repeated k-fold CV" if test_df is None else
+                   "stratified shuffled hold-out + KFold CV"),
+        "train_rows": int(len(train_df)),
+        "test_rows": 0 if test_df is None else int(len(test_df)),
+    }
+    if grouped:
+        desc["train_people"] = int(train_df[GROUP_COL].nunique())
+        desc["test_people"] = (0 if test_df is None
+                               else int(test_df[GROUP_COL].nunique()))
+        if test_df is not None and desc["test_people"] < 10:
+            desc["warning"] = (
+                f"The hold-out contains only {desc['test_people']} people, so "
+                "hold-out metrics are noisy (they change a lot with a different "
+                "split). Prefer the cross-validated numbers, or generate more "
+                "people in dummydataset.py.")
+    return desc
+
+
+def use_xgb(n_rows: int) -> bool:
+    return HAS_XGB and n_rows >= XGB_MIN_ROWS
+
+
+def _groups(train_df):
+    return train_df[GROUP_COL] if GROUP_COL in train_df.columns else None
+
+
+# ---------------------------------------------------------------- regression
+def regression_candidates(n_rows: int, num, cat) -> dict:
+    small = n_rows < SMALL_N
+    candidates = {
+        "ridge": Pipeline([("prep", make_prep(num, cat, scale=True)),
+                           ("model", Ridge(alpha=1.0))]),
+        "random_forest": Pipeline([
+            ("prep", make_prep(num, cat, scale=False)),
+            ("model", RandomForestRegressor(
+                n_estimators=300,
+                max_depth=4 if small else None,
+                min_samples_leaf=5 if small else 3,
+                random_state=RANDOM_STATE, n_jobs=-1))]),
+    }
+    if use_xgb(n_rows):
+        candidates["xgboost"] = Pipeline([
+            ("prep", make_prep(num, cat, scale=False)),
+            ("model", XGBRegressor(
+                n_estimators=400, learning_rate=0.05, max_depth=4,
+                subsample=0.9, random_state=RANDOM_STATE, n_jobs=-1))])
+    return candidates
+
+
+def regression_metrics(y_true, pred) -> dict:
+    return {"r2": round(float(r2_score(y_true, pred)), 4),
+            "mae": round(float(mean_absolute_error(y_true, pred)), 3),
+            "rmse": round(float(np.sqrt(mean_squared_error(y_true, pred))), 3)}
+
+
+def train_regression(X_train, y_train, X_test=None, y_test=None, groups=None,
+                     num=(), cat=()):
+    n = len(X_train) + (0 if X_test is None else len(X_test))
+    if groups is not None:
+        cv = GroupKFold(n_splits=min(5, groups.nunique()))
+    elif n < SMALL_N:
+        cv = RepeatedKFold(n_splits=5, n_repeats=3, random_state=RANDOM_STATE)
+    else:
+        cv = KFold(5, shuffle=True, random_state=RANDOM_STATE)
+    scoring = {"r2": "r2", "mae": "neg_mean_absolute_error"}
+
+    rows, fitted = [], {}
+    for name, model in regression_candidates(n, num, cat).items():
+        res = cross_validate(model, X_train, y_train, cv=cv,
+                             groups=groups, scoring=scoring)
+        model.fit(X_train, y_train)
+        row = {"model": name,
+               "cv_r2": round(float(res["test_r2"].mean()), 4),
+               "cv_mae": round(float(-res["test_mae"].mean()), 3),
+               "test_r2": None, "test_mae": None}
+        if X_test is not None:
+            m = regression_metrics(y_test, model.predict(X_test))
+            row["test_r2"], row["test_mae"] = m["r2"], m["mae"]
+        rows.append(row)
+        fitted[name] = model
+    results = pd.DataFrame(rows).sort_values("cv_r2", ascending=False)
+    best = results.iloc[0]["model"]
+    return fitted[best], best, results
+
+
+# ------------------------------------------------------------ classification
+def classification_candidates(n_rows: int, num, cat) -> dict:
+    small = n_rows < SMALL_N
+    candidates = {
+        "logistic_regression": Pipeline([
+            ("prep", make_prep(num, cat, scale=True)),
+            ("model", LogisticRegression(max_iter=1000))]),
+        "random_forest": Pipeline([
+            ("prep", make_prep(num, cat, scale=False)),
+            ("model", RandomForestClassifier(
+                n_estimators=300,
+                max_depth=4 if small else None,
+                min_samples_leaf=5 if small else 3,
+                random_state=RANDOM_STATE, n_jobs=-1))]),
+    }
+    if use_xgb(n_rows):
+        candidates["xgboost"] = Pipeline([
+            ("prep", make_prep(num, cat, scale=False)),
+            ("model", XGBClassifier(
+                n_estimators=300, learning_rate=0.05, max_depth=4,
+                subsample=0.9, random_state=RANDOM_STATE,
+                eval_metric="mlogloss", n_jobs=-1))])
+    return candidates
+
+
+def train_classification(X_train, y_train, X_test=None, y_test=None,
+                         groups=None, num=(), cat=()):
+    n = len(X_train) + (0 if X_test is None else len(X_test))
+    min_class = int(pd.Series(y_train).value_counts().min())
+    if min_class < 2:
+        raise SystemExit(
+            "A level has fewer than 2 rows; cannot cross-validate the "
+            "classifier. Log more days or merge levels.")
+    if groups is not None:
+        cv = GroupKFold(n_splits=min(5, groups.nunique()))
+    else:
+        n_splits = min(5, min_class)
+        cv = (RepeatedStratifiedKFold(n_splits=n_splits, n_repeats=3,
+                                      random_state=RANDOM_STATE)
+              if n < SMALL_N else StratifiedKFold(
+                  n_splits, shuffle=True, random_state=RANDOM_STATE))
+    scoring = {"f1": "f1_macro", "acc": "accuracy"}
+
+    rows, fitted = [], {}
+    for name, model in classification_candidates(n, num, cat).items():
+        res = cross_validate(model, X_train, y_train, cv=cv,
+                             groups=groups, scoring=scoring)
+        model.fit(X_train, y_train)
+        row = {"model": name,
+               "cv_f1_macro": round(float(res["test_f1"].mean()), 4),
+               "cv_accuracy": round(float(res["test_acc"].mean()), 4),
+               "test_accuracy": None, "test_f1_macro": None}
+        if X_test is not None:
+            pred = model.predict(X_test)
+            row["test_accuracy"] = round(float(accuracy_score(y_test, pred)), 4)
+            row["test_f1_macro"] = round(
+                float(f1_score(y_test, pred, average="macro")), 4)
+        rows.append(row)
+        fitted[name] = model
+    results = pd.DataFrame(rows).sort_values("cv_f1_macro", ascending=False)
+    best = results.iloc[0]["model"]
+    return fitted[best], best, results
+
+
+# ------------------------------------------------------------------ clusters
+def train_clustering(df: pd.DataFrame, num, cat):
+    """Scale numbers + one-hot categoricals, pick k by silhouette, fit K-Means.
+
+    Unsupervised and uses FEATURES only (no productivity columns), so it is
+    fitted on all rows. Silhouette is a guide: check the profiles make sense.
+    """
+    prep = make_prep(num, cat, scale=True)
+    X_t = prep.fit_transform(df[FEATURES])
+
+    ks = [k for k in N_CLUSTERS_RANGE if k < len(df)]
+    scores = {}
+    for k in ks:
+        labels = KMeans(n_clusters=k, n_init=10,
+                        random_state=RANDOM_STATE).fit_predict(X_t)
+        scores[k] = silhouette_score(
+            X_t, labels, sample_size=min(4000, len(df)),
+            random_state=RANDOM_STATE)
+    best_k = max(scores, key=scores.get)
+
+    kmeans = KMeans(n_clusters=best_k, n_init=10, random_state=RANDOM_STATE)
+    labels = kmeans.fit_predict(X_t)
+
+    # Profiles: mean of each numeric feature, most common value of each
+    # categorical one, and the average score (for reading, not for fitting).
+    profiles = (df[num + [REGRESSION_TARGET]].assign(cluster=labels)
+                .groupby("cluster").mean().round(2))
+    if cat:
+        modes = (df[cat].assign(cluster=labels).groupby("cluster")
+                 .agg(lambda s: s.mode().iloc[0]))
+        profiles = profiles.join(modes)
+    profiles.insert(0, "days", pd.Series(labels).value_counts().sort_index())
+    pipeline = Pipeline([("prep", prep), ("kmeans", kmeans)])
+    return pipeline, best_k, scores, profiles
+
+
+# ---------------------------------------------------------------------- main
+def main() -> None:
+    df = load_data()
+    n = len(df)
+    num, cat = split_feature_types(df)
+    print(f"Loaded {n} rows, {len(FEATURES)} features "
+          f"({len(num)} numeric, {len(cat)} categorical: {cat})")
+    if n < SMALL_N:
+        print(f"Small-data mode (< {SMALL_N} rows): repeated CV, "
+              "no hold-out, no XGBoost.\n")
+    else:
+        print(f"XGBoost {'ON' if use_xgb(n) else 'OFF'} "
+              f"(needs >= {XGB_MIN_ROWS} rows and the package installed)\n")
+
+    level_to_id = {name: i for i, name in enumerate(LEVELS)}
+    train_df, test_df = split_data(df)
+    split_info = split_description(train_df, test_df)
+    print("Split:", split_info, "\n")
+
+    X_train = train_df[FEATURES]
+    yr_train = train_df[REGRESSION_TARGET]
+    yc_train = train_df[CLASSIFICATION_TARGET].map(level_to_id)
+    groups = _groups(train_df)
+    if test_df is None:
+        X_test = yr_test = yc_test = None
+    else:
+        X_test = test_df[FEATURES]
+        yr_test = test_df[REGRESSION_TARGET]
+        yc_test = test_df[CLASSIFICATION_TARGET].map(level_to_id)
+
+    print("=== Regression: predict productivity_score ===")
+    reg, reg_name, reg_results = train_regression(
+        X_train, yr_train, X_test, yr_test, groups, num, cat)
+    print(reg_results.to_string(index=False))
+    print(f"Best (by CV R2): {reg_name}\n")
+
+    print("=== Classification: predict productivity_level ===")
+    clf, clf_name, clf_results = train_classification(
+        X_train, yc_train, X_test, yc_test, groups, num, cat)
+    print(clf_results.to_string(index=False))
+    print(f"Best (by CV macro-F1): {clf_name}\n")
+
+    print("=== Clustering: K-Means ===")
+    km, best_k, sil_scores, profiles = train_clustering(df, num, cat)
+    for k, s in sil_scores.items():
+        print(f"k={k}: silhouette={s:.3f}")
+    print(f"Chosen k = {best_k}\n")
+    print(profiles.to_string(), "\n")
+
+    # Hold-out metrics for the selected models (reporting only).
+    reg_test = clf_test = None
+    if X_test is not None:
+        reg_test = regression_metrics(yr_test, reg.predict(X_test))
+        pred = clf.predict(X_test)
+        ids = list(range(len(LEVELS)))
+        clf_test = {
+            "accuracy": round(float(accuracy_score(yc_test, pred)), 4),
+            "f1_macro": round(float(f1_score(yc_test, pred, average="macro")), 4),
+            "confusion_matrix": confusion_matrix(
+                yc_test, pred, labels=ids).tolist(),
+            "labels": LEVELS,
+            "per_class": classification_report(
+                yc_test, pred, labels=ids, target_names=LEVELS,
+                output_dict=True, zero_division=0),
+        }
+        print("Hold-out (selected models):", reg_test,
+              {k: clf_test[k] for k in ("accuracy", "f1_macro")}, "\n")
+
+    ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+    joblib.dump(reg, ARTIFACT_DIR / "regressor.joblib")
+    joblib.dump(clf, ARTIFACT_DIR / "classifier.joblib")
+    joblib.dump(km, ARTIFACT_DIR / "kmeans.joblib")
+    profiles.to_csv(ARTIFACT_DIR / "cluster_profiles.csv")
+
+    importance = {}
+    imp = feature_importance(reg, cat)
+    if imp:
+        importance["regressor"] = imp
+    imp = feature_importance(clf, cat)
+    if imp:
+        importance["classifier"] = imp
+    coefficients = linear_coefficients(reg)
+
+    now = datetime.now(timezone.utc)
+    metadata = {
+        "model_version": now.strftime("%Y%m%d-%H%M%S"),
+        "trained_at_utc": now.isoformat(),
+        "sklearn_version": sklearn.__version__,
+        "python_version": platform.python_version(),
+        "experimental": True,
+        "disclaimer": DISCLAIMER,
+        "features": FEATURES,
+        "numeric_features": num,
+        "categorical_features": cat,
+        "categories": {c: sorted(df[c].astype(str).unique().tolist()) for c in cat},
+        "levels": LEVELS,
+        "rows_trained_on": int(n),
+        "split": split_info,
+        "regression": {
+            "selected": reg_name,
+            "selection_rule": "highest cross-validated R2 on the training part",
+            "candidates": reg_results.to_dict("records"),
+            "holdout": reg_test,
+        },
+        "classification": {
+            "selected": clf_name,
+            "selection_rule": "highest cross-validated macro-F1 on the training part",
+            "candidates": clf_results.to_dict("records"),
+            "holdout": clf_test,
+        },
+        "kmeans": {"k": int(best_k),
+                   "silhouette": round(float(sil_scores[best_k]), 4),
+                   "silhouette_by_k": {str(k): round(float(s), 4)
+                                       for k, s in sil_scores.items()}},
+        "feature_importance": importance,
+        "regressor_coefficients": coefficients,
+        "random_state": RANDOM_STATE,
+    }
+    with open(ARTIFACT_DIR / "metadata.json", "w") as f:
+        json.dump(metadata, f, indent=2, default=str)
+    print(f"Saved models and metadata to {ARTIFACT_DIR}")
+
+
+if __name__ == "__main__":
+    main()
+
+===== requirements.txt =====
+
+blinker==1.9.0
+click==8.5.0
+cloudpickle==3.1.2
+contourpy==1.4.0
+cycler==0.12.1
+dnspython==2.9.0
+email-validator==2.3.0
+Flask==3.1.3
+Flask-Login==0.6.3
+Flask-SQLAlchemy==3.1.1
+Flask-WTF==1.3.0
+fonttools==4.66.1
+idna==3.20
+itsdangerous==2.2.0
+Jinja2==3.1.6
+joblib==1.6.0
+kiwisolver==1.5.1
+MarkupSafe==3.0.4
+matplotlib==3.11.2
+narwhals==2.26.0
+numpy==2.5.3
+packaging==26.3
+pandas==3.0.6
+pillow==12.3.0
+pyparsing==3.3.3
+python-dateutil==2.9.0.post0
+python-dotenv==1.2.4
+scikit-learn==1.9.1
+scipy==1.18.1
+seaborn==0.13.2
+six==1.17.0
+SQLAlchemy==2.1.4
+threadpoolctl==3.7.0
+typing_extensions==4.16.0
+tzdata==2026.5
+Werkzeug==3.1.9
+WTForms==3.2.2
+xgboost==3.4.1
+
+===== run.py =====
+
+from app import create_app
+
+app = create_app()
+
+if __name__ == "__main__":
+    app.run(debug=True)
+
+===== tests/test_ml.py =====
+
+"""ML tests. Run from the project root:  python -m pytest tests/test_ml.py -q
+
+Needs the dataset and trained models (python -m ml.dummydataset --rows 10000 && python -m ml.train).
+"""
+import numpy as np
+import pandas as pd
+import pytest
+
+from ml.predict import data_stage, predict_day
+from ml.settings import CLASSIFICATION_TARGET, FEATURES, REGRESSION_TARGET
+from ml.train import GROUP_COL, load_data, split_data
+
+GOOD = {"study_hours": 4, "caffeine_mg": 3, "stress_level": 4, "study_sessions": 3, "journaled": 1}
+
+
+def test_targets_never_in_features():
+    assert not {REGRESSION_TARGET, CLASSIFICATION_TARGET, "productive_day",
+                "previous_day_productivity"} & set(FEATURES)
+
+
+def test_split_holds_out_whole_people():
+    train, test = split_data(load_data())
+    assert not set(train[GROUP_COL]) & set(test[GROUP_COL])
+    assert len(test) > 0
+
+
+def test_split_is_deterministic():
+    a = split_data(load_data())[1][GROUP_COL].unique()
+    b = split_data(load_data())[1][GROUP_COL].unique()
+    assert list(a) == list(b)
+
+
+def test_predict_output_shape_and_labels():
+    r = predict_day(GOOD)
+    assert 0 <= r["predicted_score"] <= 100
+    assert r["predicted_level"] in ("low", "medium", "high")
+    assert abs(sum(r["level_probabilities"].values()) - 1) < 0.01
+    assert r["experimental"] is True and "synthetic" in r["disclaimer"]
+
+
+@pytest.mark.parametrize("bad", [
+    {k: v for k, v in GOOD.items() if k != "study_hours"},
+    {**GOOD, "study_hours": "abc"},
+    {**GOOD, "stress_level": 11},
+    {**GOOD, "caffeine_mg": -1},
+    {**GOOD, "study_hours": float("nan")},
+])
+def test_predict_rejects_bad_input(bad):
+    with pytest.raises(ValueError):
+        predict_day(bad)
+
+
+def test_more_study_never_gives_wildly_different_type():
+    # sanity: output stays finite across the valid grid corners
+    for s in (0, 12):
+        for st in (1, 10):
+            assert np.isfinite(predict_day({**GOOD, "study_hours": s, "stress_level": st})["predicted_score"])
+
+
+def test_data_stage_does_not_claim_a_personal_model():
+    assert [data_stage(n) for n in (0, 7, 20)] == ["general", "descriptive", "enough_for_trends"]
+
+===== tests/test_routes.py.example =====
+
+import pytest
+from app import create_app, db
+from app.models import User, ProductivityLog
+
+@pytest.fixture
+def client():
+    app = create_app()
+    with app.app_context():
+        db.create_all()
+        db.session.add_all([User(id=1), User(id=2)])
+        db.session.add(ProductivityLog(id=1, user_id=1, log_date="2026-10-01", study_hours=4, caffeine_mg=3, stress_level=4, study_sessions=3, journaled=True))
+        db.session.add(ProductivityLog(id=2, user_id=2, log_date="2026-10-01", study_hours=2, caffeine_mg=1, stress_level=8, study_sessions=1, journaled=False))
+        db.session.add(ProductivityLog(id=3, user_id=1, log_date="2026-10-02", study_hours=2, caffeine_mg=None, stress_level=8, study_sessions=1, journaled=False))
+        db.session.commit()
+        c = app.test_client()
+        with c.session_transaction() as s:
+            s["_user_id"] = "1"; s["_fresh"] = True
+        yield c
+
+GOOD = {"study_hours": "4", "caffeine_mg": "3", "stress_level": "4", "study_sessions": "3", "journaled": "1"}
+
+def test_get_form(client):
+    r = client.get("/insights/")
+    assert r.status_code == 200 and b"Experimental" in r.data and b"synthetic" in r.data
+
+def test_post_valid(client):
+    r = client.post("/insights/", data=GOOD)
+    assert r.status_code == 200 and b"Estimated score" in r.data and b"high" in r.data or b"medium" in r.data
+    assert b"Experimental: trained on synthetic" in r.data
+
+def test_post_out_of_range(client):
+    r = client.post("/insights/", data={**GOOD, "caffeine_mg": "99"})
+    assert r.status_code == 200 and b"must be between" in r.data and b"Estimated score" not in r.data
+
+def test_post_garbage(client):
+    r = client.post("/insights/", data={**GOOD, "study_hours": "abc"})
+    assert b"must be a number" in r.data and b"Estimated score" not in r.data
+
+def test_post_empty_checkbox_is_zero(client):
+    d = dict(GOOD); d.pop("journaled")
+    assert b"Estimated score" in client.post("/insights/", data=d).data
+
+def test_estimate_own_log(client):
+    r = client.get("/insights/log/1")
+    assert r.status_code == 200 and b"Estimated score" in r.data
+
+def test_estimate_other_users_log_is_404(client):
+    assert client.get("/insights/log/2").status_code == 404
+
+def test_log_with_missing_value_warns(client):
+    r = client.get("/insights/log/3")
+    assert r.status_code == 200 and b"missing" in r.data and b"Estimated score" not in r.data
+
+def test_requires_login():
+    app = create_app()
+    with app.app_context():
+        db.create_all()
+        r = app.test_client().get("/insights/")
+        assert r.status_code in (302, 401)
+
+def test_models_not_trained(client, tmp_path, monkeypatch):
+    import ml.predict as p
+    p._cache.clear(); monkeypatch.setattr(p, "ARTIFACT_DIR", tmp_path)
+    r = client.get("/insights/")
+    assert r.status_code == 503 and b"not set up yet" in r.data
+    p._cache.clear()

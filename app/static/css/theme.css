@@ -1,0 +1,174 @@
+/* Hibi theme: built around the logo (flame orange + ink).
+   Loaded AFTER bootstrap and style.css, so it overrides both. */
+:root {
+  --hibi-orange: #f35d3a;
+  --hibi-orange-600: #e24f2d;
+  --hibi-orange-700: #c2410c;      /* readable orange for text/links (4.9:1 on cream) */
+  --hibi-orange-100: #fff1ec;
+  --hibi-orange-200: #ffd9cc;
+  --hibi-ink: #212529;
+  --hibi-cream: #fbf8f6;
+  --hibi-line: rgba(33, 37, 41, .10);
+
+  --bs-primary: #f35d3a;
+  --bs-primary-rgb: 243, 93, 58;
+  --bs-link-color: #c2410c;
+  --bs-link-color-rgb: 194, 65, 12;
+  --bs-link-hover-color: #9a3412;
+  --bs-link-hover-color-rgb: 154, 52, 18;
+  --bs-body-bg: #fbf8f6;
+  --bs-body-color: #212529;
+  --bs-font-sans-serif: "Inter", "Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", Arial, sans-serif;
+  --bs-border-radius: .65rem;
+  --bs-border-radius-lg: .9rem;
+}
+
+body { background: var(--hibi-cream); color: var(--hibi-ink); }
+h1, h2, h3, h4, h5, h6 { letter-spacing: -.01em; }
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; }
+
+/* ---------- buttons: orange with ink text (5.2:1), not white (3.3:1) ---------- */
+.btn-primary {
+  --bs-btn-color: #1c1c1c;
+  --bs-btn-bg: #f35d3a;
+  --bs-btn-border-color: #f35d3a;
+  --bs-btn-hover-color: #1c1c1c;
+  --bs-btn-hover-bg: #f7775a;
+  --bs-btn-hover-border-color: #f7775a;
+  --bs-btn-active-color: #1c1c1c;
+  --bs-btn-active-bg: #e24f2d;
+  --bs-btn-active-border-color: #e24f2d;
+  --bs-btn-disabled-color: #1c1c1c;
+  --bs-btn-disabled-bg: #f9a58f;
+  --bs-btn-disabled-border-color: #f9a58f;
+  --bs-btn-focus-shadow-rgb: 243, 93, 58;
+  font-weight: 600;
+}
+.btn-outline-primary {
+  --bs-btn-color: #c2410c;
+  --bs-btn-border-color: #f35d3a;
+  --bs-btn-hover-color: #1c1c1c;
+  --bs-btn-hover-bg: #f35d3a;
+  --bs-btn-hover-border-color: #f35d3a;
+  --bs-btn-active-color: #1c1c1c;
+  --bs-btn-active-bg: #f35d3a;
+  --bs-btn-active-border-color: #f35d3a;
+  --bs-btn-disabled-color: #c2410c;
+  --bs-btn-disabled-border-color: #f9a58f;
+  --bs-btn-focus-shadow-rgb: 243, 93, 58;
+}
+.btn-link { --bs-btn-color: #c2410c; --bs-btn-hover-color: #9a3412; }
+.progress { background-color: #efe7e2; }
+.progress-bar { background-color: var(--hibi-orange); }
+.form-control:focus, .form-select:focus {
+  border-color: #f9a58f;
+  box-shadow: 0 0 0 .25rem rgba(243, 93, 58, .18);
+}
+.form-check-input:checked { background-color: var(--hibi-orange); border-color: var(--hibi-orange); }
+.form-check-input:focus { border-color: #f9a58f; box-shadow: 0 0 0 .25rem rgba(243, 93, 58, .18); }
+
+/* ---------- cards ---------- */
+.card {
+  border: 1px solid var(--hibi-line);
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(33, 37, 41, .04), 0 6px 18px rgba(33, 37, 41, .04);
+}
+
+/* ---------- navbar ---------- */
+.navbar.bg-dark { border-bottom: 3px solid var(--hibi-orange); }
+.nav-user {
+  display: inline-flex; align-items: center; gap: .5rem;
+  color: #fff; text-decoration: none; font-size: .875rem;
+  padding: .15rem .7rem .15rem .2rem;
+  border: 1px solid rgba(255, 255, 255, .35); border-radius: 999px;
+}
+.nav-user:hover { background: rgba(255, 255, 255, .1); color: #fff; }
+
+/* ---------- avatar (initials) ---------- */
+.avatar {
+  display: inline-flex; align-items: center; justify-content: center; flex: none;
+  border-radius: 50%; background: var(--av, #c2410c); color: #fff;
+  font-weight: 700; letter-spacing: .02em; user-select: none;
+}
+.avatar-sm { width: 28px; height: 28px; font-size: .72rem; }
+.avatar-lg { width: 92px; height: 92px; font-size: 2rem; box-shadow: 0 0 0 4px #fff, 0 0 0 6px var(--hibi-orange); }
+
+/* ---------- home: heatmap in the flame ramp ---------- */
+.heatmap .cell.l1, .legend .cell.l1 { background: #ffd9cc; }
+.heatmap .cell.l2, .legend .cell.l2 { background: #ffb199; }
+.heatmap .cell.l3, .legend .cell.l3 { background: #f98563; }
+.heatmap .cell.l4, .legend .cell.l4 { background: #e24f2d; }
+
+/* ---------- auth pages ---------- */
+.auth-wrap { max-width: 420px; margin: 1.5rem auto 0; }
+.auth-logo { display: block; margin: 0 auto 1rem; height: 64px; }
+.auth-card { padding: 1.75rem 1.75rem 1.5rem; }
+
+/* ---------- landing page ---------- */
+.landing-hero {
+  position: relative; text-align: center; padding: 2.5rem 1rem 2rem;
+  background: radial-gradient(ellipse 60% 55% at 50% 12%, rgba(243, 93, 58, .16), rgba(243, 93, 58, 0) 70%);
+}
+.landing-hero .hero-logo { height: 170px; max-width: 100%; }
+.landing-hero h1 { font-size: clamp(1.9rem, 4.5vw, 2.9rem); font-weight: 700; margin: 1.25rem auto .6rem; max-width: 18ch; }
+.landing-hero .lead { max-width: 52ch; margin: 0 auto 1.5rem; color: #495057; }
+.step-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; border-radius: 50%;
+  background: var(--hibi-orange-100); color: var(--hibi-orange-700); font-weight: 700; margin-bottom: .6rem;
+}
+.demo-grid {
+  display: grid; grid-auto-flow: column; grid-template-rows: repeat(7, 14px); gap: 4px;
+  justify-content: center; margin: 0 auto;
+}
+.demo-cell { width: 14px; height: 14px; border-radius: 3px; background: #efe7e2; }
+.demo-cell.d1 { background: #ffd9cc; } .demo-cell.d2 { background: #ffb199; }
+.demo-cell.d3 { background: #f98563; } .demo-cell.d4 { background: #e24f2d; }
+.landing-note { font-size: .85rem; color: #6c757d; text-align: center; margin: 2rem 0 0; }
+
+/* ---------- profile ---------- */
+.profile-head { padding: 1.5rem; }
+.stat-tile { padding: 1rem 1.1rem; height: 100%; }
+.stat-tile .label { font-size: .78rem; text-transform: uppercase; letter-spacing: .05em; color: #6c757d; }
+.stat-tile .value { font-size: 1.7rem; font-weight: 700; line-height: 1.15; }
+.stat-tile .sub { font-size: .8rem; color: #6c757d; }
+.streak-chip {
+  display: inline-flex; align-items: center; gap: .35rem;
+  background: var(--hibi-orange-100); color: var(--hibi-orange-700);
+  border-radius: 999px; padding: .2rem .7rem; font-size: .85rem; font-weight: 600;
+}
+.streak-chip img { height: 16px; }
+.goal-bar { height: 8px; }
+
+/* ---------- profile photo ---------- */
+.avatar-img { object-fit: cover; background: #efe7e2; }
+.avatar-edit .btn-sm { cursor: pointer; }
+#avatar-file:focus-visible + label { outline: 3px solid rgba(243, 93, 58, .45); outline-offset: 2px; }
+
+/* ---------- photo adjuster ---------- */
+.crop-overlay { position: fixed; inset: 0; z-index: 1080; display: flex; align-items: center; justify-content: center; padding: 1rem; background: rgba(33, 37, 41, .65); }
+.crop-overlay[hidden] { display: none; }
+.crop-dialog { width: 100%; max-width: 380px; padding: 1.25rem; }
+.crop-stage { position: relative; width: 100%; aspect-ratio: 1 / 1; overflow: hidden; border-radius: 12px; background: #212529; cursor: grab; touch-action: none; user-select: none; outline: none; }
+.crop-stage:active { cursor: grabbing; }
+.crop-stage:focus-visible { box-shadow: 0 0 0 3px rgba(243, 93, 58, .5); }
+.crop-stage img { position: absolute; left: 50%; top: 50%; max-width: none; pointer-events: none; }
+.crop-ring { position: absolute; inset: 0; border-radius: 50%; border: 2px solid #fff; box-shadow: 0 0 0 9999px rgba(33, 37, 41, .55); pointer-events: none; }
+.form-range::-webkit-slider-thumb { background: var(--hibi-orange); }
+.form-range::-moz-range-thumb { background: var(--hibi-orange); }
+.form-range:focus::-webkit-slider-thumb { box-shadow: 0 0 0 .25rem rgba(243, 93, 58, .25); }
+
+/* ---------- heatmap card ---------- */
+.heat-card { border-top: 3px solid var(--hibi-orange); }
+.heat-card .card-body { padding: 1.25rem 1.25rem 1rem; }
+.heatmap .cell:not(.empty):hover { outline: 2px solid rgba(33, 37, 41, .35); outline-offset: 1px; }
+.heat-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: .75rem; margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--hibi-line); }
+.heat-stat { display: flex; align-items: center; gap: .6rem; }
+.heat-stat-icon { height: 28px; }
+.heat-stat-value { font-size: 1.3rem; font-weight: 700; line-height: 1.1; }
+.heat-stat-value span { font-size: .8rem; font-weight: 500; color: #6c757d; }
+.heat-stat-label { font-size: .72rem; color: #6c757d; text-transform: uppercase; letter-spacing: .05em; }
+@media (max-width: 575.98px) { .heat-stats { grid-template-columns: 1fr; } }
+.heat-stat-icon { width: 28px; object-fit: contain; }
+.heat-stat-badge { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 28px; height: 28px; border-radius: 50%; background: var(--hibi-orange-100); color: var(--hibi-orange-700); }

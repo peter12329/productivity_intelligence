@@ -7,7 +7,7 @@
     <h1 class="display-6 fw-semibold">{{ data.greeting }}, {{ current_user.username }}</h1>
     <p class="text-muted">
       {% if data.total_logs == 0 %}Nothing logged yet. Use the <strong>Log</strong> buttons on the right to start.
-      {% else %}{{ data.total_logs }} day{{ "s" if data.total_logs != 1 }} logged in the last year.{% endif %}
+      {% else %}{{ data.total_logs }} day{{ "s" if data.total_logs != 1 }} logged in the last 12 months.{% endif %}
     </p>
 
     {% if data.estimate %}
@@ -42,36 +42,158 @@
       </tbody>
     </table>
 
-    <!-- GITHUB HEATMAP: small by default, expands to full year -->
-    <div class="d-flex justify-content-between align-items-center mb-2">
-      <h2 class="h6 mb-0">Your last year</h2>
-      <button type="button" id="heatmap-toggle" class="btn btn-link btn-sm p-0">Show full year</button>
-    </div>
-
-    <div class="heatmap" id="heatmap">
-      {% for week in data.weeks %}
-        <div class="heatmap-col{% if loop.revindex > 8 %} old-week{% endif %}">
-          <div class="month-label">{{ data.month_labels[loop.index0] }}</div>
-          <div class="heatmap-week">
-            {% for c in week %}
-              {% if c %}
-                <div class="cell l{{ c.level }}{% if c.today and not c.logged %} today-empty{% endif %}{% if c.today %} is-today{% endif %}" title="{{ c.tip }}"></div>
-              {% else %}
-                <div class="cell empty"></div>
-              {% endif %}
+    <!-- HEATMAP CARD: last 12 months by default; a picker appears once there are earlier years -->
+    <div class="card heat-card mb-3">
+      <div class="card-body">
+      <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2" id="heatmap-section">
+        <div class="d-flex align-items-baseline gap-2">
+          <h2 class="h6 mb-0">{{ data.heat_title }}</h2>
+          <span class="small text-muted">{{ data.heat_count }} day{{ "s" if data.heat_count != 1 }} logged</span>
+        </div>
+        <div class="d-flex align-items-center gap-2">
+          {% if data.show_year_picker %}
+          <select class="form-select form-select-sm w-auto" aria-label="Heatmap period"
+                  onchange="location.href = this.value + '#heatmap-section'">
+            {% for o in data.heat_options %}
+            <option value="{{ url_for('main.index', year=o.year) if o.year else url_for('main.index') }}" {% if o.year == data.heat_year %}selected{% endif %}>{{ o.label }}</option>
             {% endfor %}
+          </select>
+          {% endif %}
+          {% if not data.heat_year %}<button type="button" id="heatmap-toggle" class="btn btn-link btn-sm p-0">Show full 12 months</button>{% endif %}
+        </div>
+      </div>
+
+      <div class="heatmap{% if data.heat_year %} expanded{% endif %}" id="heatmap" data-scroll="{{ 'end' if data.heat_scroll_end else 'start' }}">
+        {% for week in data.weeks %}
+          <div class="heatmap-col{% if not data.heat_year and loop.revindex > 8 %} old-week{% endif %}">
+            <div class="month-label">{{ data.month_labels[loop.index0] }}</div>
+            <div class="heatmap-week">
+              {% for c in week %}
+                {% if c %}
+                  <div class="cell l{{ c.level }}{% if c.today and not c.logged %} today-empty{% endif %}{% if c.today %} is-today{% endif %}" title="{{ c.tip }}"></div>
+                {% else %}
+                  <div class="cell empty"></div>
+                {% endif %}
+              {% endfor %}
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+
+      <div class="legend small text-muted mt-2">
+        <span class="cell l0"></span> No data
+        <span class="cell today-empty ms-2"></span> Today, not logged
+        <span class="ms-3">Less</span>
+        <span class="cell l1"></span><span class="cell l2"></span><span class="cell l3"></span><span class="cell l4"></span>
+        <span>Full day</span>
+      </div>
+
+        <div class="heat-stats">
+          <div class="heat-stat">
+            <img class="heat-stat-icon" src="{{ url_for('static', filename='img/hibi-icon.svg') }}" alt="">
+            <div>
+              <div class="heat-stat-value">{{ data.streak_current }}<span> day{{ "s" if data.streak_current != 1 }}</span></div>
+              <div class="heat-stat-label">Current streak</div>
+            </div>
+          </div>
+          <div class="heat-stat">
+            <span class="heat-stat-badge"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M12 2l2.9 6.3 6.9.7-5.2 4.6 1.5 6.8L12 17l-6.1 3.4 1.5-6.8L2.2 9l6.9-.7z"/></svg></span>
+            <div>
+              <div class="heat-stat-value">{{ data.streak_longest }}<span> day{{ "s" if data.streak_longest != 1 }}</span></div>
+              <div class="heat-stat-label">Longest streak{% if data.heat_year %} in {{ data.heat_year }}{% endif %}</div>
+            </div>
+          </div>
+          <div class="heat-stat">
+            <span class="heat-stat-badge"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4M9 15l2 2 4-4"/></svg></span>
+            <div>
+              <div class="heat-stat-value">{{ data.heat_pct }}<span>% of days</span></div>
+              <div class="heat-stat-label">Logged</div>
+            </div>
           </div>
         </div>
-      {% endfor %}
+      </div>
     </div>
 
-    <div class="legend small text-muted mt-2">
-      <span class="cell l0"></span> No data
-      <span class="cell today-empty ms-2"></span> Today, not logged
-      <span class="ms-3">Less</span>
-      <span class="cell l1"></span><span class="cell l2"></span><span class="cell l3"></span><span class="cell l4"></span>
-      <span>Full day</span>
+    <!-- ML estimate (experimental): data.estimate is set by the main route; hidden if absent -->
+    {% if data.estimate %}
+    <div class="card mb-3" id="estimate-card">
+      <div class="card-body py-3">
+        <div class="d-flex justify-content-between align-items-center">
+          <h3 class="h6 mb-0">Estimated score</h3>
+          <span class="badge bg-warning text-dark">Experimental</span>
+        </div>
+        {% if data.estimate.status == "ok" %}
+          {% set e = data.estimate %}
+          {% set colors = {"low": "#e5484d", "medium": "#f5a623", "high": "#30a46c"} %}
+          <div class="row g-4">
+            <div class="col-md-6">
+          <div class="d-flex align-items-baseline gap-2 mt-2">
+            <span class="display-6 fw-semibold">{{ e.score }}</span><span class="text-muted">/ 100</span>
+            <span class="badge ms-auto" style="background: {{ colors[e.level] }}">{{ e.level|capitalize }}</span>
+          </div>
+
+          <!-- gauge: Low / Medium / High zones, the score marker, and the typical-error stripe -->
+          <div class="est-gauge" style="background: linear-gradient(to right,
+               {{ colors.low }} 0 {{ e.low_below }}%, {{ colors.medium }} {{ e.low_below }}% {{ e.high_from }}%,
+               {{ colors.high }} {{ e.high_from }}% 100%);"
+               title="Low below {{ e.low_below }}, medium up to {{ e.high_from }}, high above">
+            {% if e.range_lo is not none %}<div class="est-range" style="left: {{ e.range_lo }}%; width: {{ e.range_hi - e.range_lo }}%;"></div>{% endif %}
+            <div class="est-marker" style="left: {{ e.score }}%;"></div>
+          </div>
+          <div class="est-zones">
+            <span style="width: {{ e.low_below }}%">Low</span>
+            <span style="width: {{ e.high_from - e.low_below }}%">Medium</span>
+            <span style="width: {{ 100 - e.high_from }}%">High</span>
+          </div>
+
+          {% if e.range_lo is not none %}
+          <p class="small mb-2">Likely between <strong>{{ e.range_lo|round|int }}</strong> and <strong>{{ e.range_hi|round|int }}</strong>
+            <span class="text-muted">(typical error &plusmn;{{ e.error }})</span></p>
+          {% endif %}
+
+          <div class="small text-muted mb-1">How sure is the model about the level?</div>
+          <div class="est-probs mb-1">
+            {% for p in e.probs %}{% if p.pct > 0 %}<span style="width: {{ p.pct }}%; background: {{ colors[p.level] }}" title="{{ p.level|capitalize }} {{ p.pct }}%"></span>{% endif %}{% endfor %}
+          </div>
+          <div class="small mb-2">
+            {% for p in e.probs %}<span class="me-2"><span class="est-dot" style="background: {{ colors[p.level] }}"></span>{{ p.level|capitalize }} {{ p.pct }}%</span>{% endfor %}
+          </div>
+
+            </div>
+            <div class="col-md-6">
+          {% if e.levers %}
+          <div class="small fw-semibold mt-2">In the model, what would add the most</div>
+          <ul class="small ps-3 mb-2">
+            {% for l in e.levers %}<li>{{ l.text }} <span class="text-success">+{{ l.gain }} pts</span></li>{% endfor %}
+          </ul>
+          {% endif %}
+
+          <details class="small mb-2">
+            <summary class="text-primary" style="cursor: pointer;">How to read this</summary>
+            <ul class="ps-3 mt-2 mb-0 text-muted">
+              <li>The score is the model's guess (0&ndash;100) for a day with these inputs.</li>
+              <li>Levels: Low below {{ e.low_below }}, Medium up to {{ e.high_from }}, High above.</li>
+              <li>The outlined stripe on the bar is the typical error; the real figure could land anywhere in it.</li>
+              <li>The &quot;add the most&quot; list re-runs the model with one change. It shows what the model learned, not what will happen to you.</li>
+              <li>The model was trained on simulated days. It is a demo of the method, not advice.</li>
+            </ul>
+          </details>
+
+          <p class="small text-muted mb-1">Based on {{ e.source }}. Not a forecast for tomorrow.</p>
+          <a class="small" href="{{ url_for('insights.estimate_log', log_id=e.log_id) }}">Details</a>
+          <span class="small text-muted">&middot;</span>
+          <a class="small" href="{{ url_for('insights.index') }}">Try your own numbers</a>
+            </div>
+          </div>
+        {% elif data.estimate.status == "no_log" %}
+          <p class="small text-muted mt-2 mb-0">Log a day to see an estimate.</p>
+        {% else %}
+          <p class="small text-muted mt-2 mb-0">Can't estimate yet. {{ data.estimate.message }}</p>
+        {% endif %}
+      </div>
     </div>
+    {% endif %}
+
   </div>
 
 
@@ -122,79 +244,6 @@
     {% endif %}
   </div>
 
-    <!-- ML estimate (experimental): data.estimate is set by the main route; hidden if absent -->
-    {% if data.estimate %}
-    <div class="card mt-3 mb-3" id="estimate-card">
-      <div class="card-body py-3">
-        <div class="d-flex justify-content-between align-items-center">
-          <h3 class="h6 mb-0">Estimated score</h3>
-          <span class="badge bg-warning text-dark">Experimental</span>
-        </div>
-        {% if data.estimate.status == "ok" %}
-          {% set e = data.estimate %}
-          {% set colors = {"low": "#e5484d", "medium": "#f5a623", "high": "#30a46c"} %}
-          <div class="d-flex align-items-baseline gap-2 mt-2">
-            <span class="display-6 fw-semibold">{{ e.score }}</span><span class="text-muted">/ 100</span>
-            <span class="badge ms-auto" style="background: {{ colors[e.level] }}">{{ e.level|capitalize }}</span>
-          </div>
-
-          <!-- gauge: Low / Medium / High zones, the score marker, and the typical-error stripe -->
-          <div class="est-gauge" style="background: linear-gradient(to right,
-               {{ colors.low }} 0 {{ e.low_below }}%, {{ colors.medium }} {{ e.low_below }}% {{ e.high_from }}%,
-               {{ colors.high }} {{ e.high_from }}% 100%);"
-               title="Low below {{ e.low_below }}, medium up to {{ e.high_from }}, high above">
-            {% if e.range_lo is not none %}<div class="est-range" style="left: {{ e.range_lo }}%; width: {{ e.range_hi - e.range_lo }}%;"></div>{% endif %}
-            <div class="est-marker" style="left: {{ e.score }}%;"></div>
-          </div>
-          <div class="est-zones">
-            <span style="width: {{ e.low_below }}%">Low</span>
-            <span style="width: {{ e.high_from - e.low_below }}%">Medium</span>
-            <span style="width: {{ 100 - e.high_from }}%">High</span>
-          </div>
-
-          {% if e.range_lo is not none %}
-          <p class="small mb-2">Likely between <strong>{{ e.range_lo|round|int }}</strong> and <strong>{{ e.range_hi|round|int }}</strong>
-            <span class="text-muted">(typical error &plusmn;{{ e.error }})</span></p>
-          {% endif %}
-
-          <div class="small text-muted mb-1">How sure is the model about the level?</div>
-          <div class="est-probs mb-1">
-            {% for p in e.probs %}{% if p.pct > 0 %}<span style="width: {{ p.pct }}%; background: {{ colors[p.level] }}" title="{{ p.level|capitalize }} {{ p.pct }}%"></span>{% endif %}{% endfor %}
-          </div>
-          <div class="small mb-2">
-            {% for p in e.probs %}<span class="me-2"><span class="est-dot" style="background: {{ colors[p.level] }}"></span>{{ p.level|capitalize }} {{ p.pct }}%</span>{% endfor %}
-          </div>
-
-          {% if e.levers %}
-          <div class="small fw-semibold mt-3">In the model, what would add the most</div>
-          <ul class="small ps-3 mb-2">
-            {% for l in e.levers %}<li>{{ l.text }} <span class="text-success">+{{ l.gain }} pts</span></li>{% endfor %}
-          </ul>
-          {% endif %}
-
-          <details class="small mb-2">
-            <summary class="text-primary" style="cursor: pointer;">How to read this</summary>
-            <ul class="ps-3 mt-2 mb-0 text-muted">
-              <li>The score is the model's guess (0&ndash;100) for a day with these inputs.</li>
-              <li>Levels: Low below {{ e.low_below }}, Medium up to {{ e.high_from }}, High above.</li>
-              <li>The outlined stripe on the bar is the typical error; the real figure could land anywhere in it.</li>
-              <li>The &quot;add the most&quot; list re-runs the model with one change. It shows what the model learned, not what will happen to you.</li>
-              <li>The model was trained on simulated days. It is a demo of the method, not advice.</li>
-            </ul>
-          </details>
-
-          <p class="small text-muted mb-1">Based on {{ e.source }}. Not a forecast for tomorrow.</p>
-          <a class="small" href="{{ url_for('insights.estimate_log', log_id=e.log_id) }}">Details</a>
-          <span class="small text-muted">&middot;</span>
-          <a class="small" href="{{ url_for('insights.index') }}">Try your own numbers</a>
-        {% elif data.estimate.status == "no_log" %}
-          <p class="small text-muted mt-2 mb-0">Log a day to see an estimate.</p>
-        {% else %}
-          <p class="small text-muted mt-2 mb-0">Can't estimate yet. {{ data.estimate.message }}</p>
-        {% endif %}
-      </div>
-    </div>
-    {% endif %}
   </div>
 </div>
 
@@ -224,17 +273,20 @@
   (function () {
     var btn = document.getElementById("heatmap-toggle");
     var map = document.getElementById("heatmap");
-    if (!btn || !map) return;
+    if (!map) return;
 
+    // newest weeks are on the right: show them (a past year starts at January)
     function scrollToLatest() {
-      map.scrollLeft = map.scrollWidth;
+      map.scrollLeft = map.dataset.scroll === "end" ? map.scrollWidth : 0;
     }
 
-    btn.addEventListener("click", function () {
-      var open = map.classList.toggle("expanded");
-      btn.textContent = open ? "Show less" : "Show full year";
-      scrollToLatest();
-    });
+    if (btn) {
+      btn.addEventListener("click", function () {
+        var open = map.classList.toggle("expanded");
+        btn.textContent = open ? "Show less" : "Show full 12 months";
+        scrollToLatest();
+      });
+    }
 
     scrollToLatest();
     window.addEventListener("load", scrollToLatest);
@@ -253,9 +305,44 @@
 </script>
 
 {% else %}
-<!-- header -->
-<h1>Hibi</h1>
-<p>Personal Productivity Intelligence App</p>
-<a class="btn btn-primary btn-lg" href="{{ url_for('auth.login') }}">Log in to get started</a>
+<!-- landing page (visitors who are not logged in) -->
+<section class="landing-hero">
+  <img class="hero-logo" src="{{ url_for('static', filename='img/hibi-logo-light.svg') }}" alt="Hibi">
+  <h1>Track your days. See what moves them.</h1>
+  <p class="lead">Log a few habits in seconds, watch your weeks fill up, and get an experimental estimate of how productive a day looks.</p>
+  <div class="d-flex justify-content-center gap-2 flex-wrap">
+    <a class="btn btn-primary btn-lg px-4" href="{{ url_for('auth.register') }}">Create your account</a>
+    <a class="btn btn-outline-primary btn-lg px-4" href="{{ url_for('auth.login') }}">Log in</a>
+  </div>
+</section>
+
+<section class="row g-3 mt-2">
+  <div class="col-md-4">
+    <div class="card h-100 p-4">
+      <span class="step-badge">1</span>
+      <h2 class="h5">Log in seconds</h2>
+      <p class="text-muted mb-0">Sleep, deep work, stress, caffeine and a few more. One tap or one number per habit, any day you like.</p>
+    </div>
+  </div>
+  <div class="col-md-4">
+    <div class="card h-100 p-4">
+      <span class="step-badge">2</span>
+      <h2 class="h5">Watch the weeks fill</h2>
+      <p class="text-muted mb-3">A weekly grid and a year heatmap show which goals you met and how your streaks are going.</p>
+      <div class="demo-grid" aria-hidden="true">
+        {% for i in range(70) %}<span class="demo-cell d{{ (i * 7 + (i // 7) * 3) % 5 }}"></span>{% endfor %}
+      </div>
+    </div>
+  </div>
+  <div class="col-md-4">
+    <div class="card h-100 p-4">
+      <span class="step-badge">3</span>
+      <h2 class="h5">Try the estimate</h2>
+      <p class="text-muted mb-0">An experimental model gives a score for the day you logged, with a typical error and what it leans on. It learns from simulated data, so treat it as a demo.</p>
+    </div>
+  </div>
+</section>
+
+<p class="landing-note">Hibi is a student project. Estimates are experimental and are not advice.</p>
 {% endif %}
 {% endblock %}

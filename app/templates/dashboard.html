@@ -8,10 +8,10 @@
   {% else %}
 
   <div class="cards">
-    <div class="card"><span>Days logged</span><b>{{ stats.summary.total_logs }}</b></div>
-    <div class="card"><span>Avg score</span><b>{{ stats.summary.avg_score }}%</b></div>
-    <div class="card"><span>Best day</span><b>{{ stats.summary.best_day }}</b></div>
-    <div class="card"><span>Best score</span><b>{{ stats.summary.best_score }}%</b></div>
+    <div class="stat-card"><span>Days logged</span><b>{{ stats.summary.total_logs }}</b></div>
+    <div class="stat-card"><span>Avg score</span><b>{{ stats.summary.avg_score }}%</b></div>
+    <div class="stat-card"><span>Best day</span><b>{{ stats.summary.best_day }}</b></div>
+    <div class="stat-card"><span>Best score</span><b>{{ stats.summary.best_score }}%</b></div>
   </div>
 
   <h2>Productivity trend</h2>
@@ -35,12 +35,19 @@
   </table>
 
   <h2>What moves your score</h2>
+  {% if stats.summary.total_logs >= 14 %}
+  {% set names = {"caffeine_mg": "Caffeine level", "study_hours": "Deep work (hours)", "study_sessions": "Deep work sessions",
+                  "sleep_hours": "Sleep", "stress_level": "Stress", "journaled": "Journaling", "disruptions": "Disruptions",
+                  "junk_food": "Junk food", "task_difficulty": "Task difficulty", "free_hours": "Free hours"} %}
   <table class="habit-table">
     {% for field, r in stats.correlations.items() %}
-    <tr><td>{{ field }}</td><td>{{ r }}</td></tr>
+    <tr><td>{{ names.get(field, field|replace("_", " ")|capitalize) }}</td><td>{{ r }}</td></tr>
     {% endfor %}
   </table>
   <small>Correlation shows association, not cause.</small>
+  {% else %}
+  <p class="text-muted">Needs at least 14 logged days. With fewer, a correlation can look strong by chance. You have {{ stats.summary.total_logs }}.</p>
+  {% endif %}
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script>
@@ -51,7 +58,7 @@
         labels: s.trend.dates,
         datasets: [
           {label: "Daily", data: s.trend.score, borderColor: "#aaa", tension: .3},
-          {label: "7-day avg", data: s.trend.rolling, borderColor: "#6f42c1", tension: .3}
+          {label: "7-day avg", data: s.trend.rolling, borderColor: "#f35d3a", tension: .3}
         ]
       },
       options: {scales: {y: {min: 0, max: 100}}}
@@ -60,7 +67,7 @@
       type: "bar",
       data: {
         labels: Object.keys(s.weekday),
-        datasets: [{label: "Avg score", data: Object.values(s.weekday), backgroundColor: "#6f42c1"}]
+        datasets: [{label: "Avg score", data: Object.values(s.weekday), backgroundColor: "#f35d3a"}]
       },
       options: {scales: {y: {min: 0, max: 100}}}
     });
@@ -70,9 +77,9 @@
 
 <style>
   .cards {display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:12px; margin:16px 0}
-  .card {padding:14px; border-radius:10px; background:rgba(127,127,127,.12)}
-  .card span {display:block; font-size:.8rem; opacity:.7}
-  .card b {font-size:1.4rem}
+  .stat-card {padding:14px 16px; border-radius:14px; background:#fff; border:1px solid var(--hibi-line); box-shadow:0 1px 2px rgba(33,37,41,.04)}
+  .stat-card span {display:block; font-size:.8rem; color:#6c757d}
+  .stat-card b {font-size:1.5rem}
   .habit-table {width:100%; border-collapse:collapse; margin:8px 0 20px}
   .habit-table th, .habit-table td {text-align:left; padding:6px 8px; border-bottom:1px solid rgba(127,127,127,.25)}
   .dot {display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:8px}

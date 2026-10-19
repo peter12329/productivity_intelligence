@@ -1,0 +1,10 @@
+{# Profile picture. Shows the uploaded photo when `v` (the photo's version) is
+   given, otherwise initials on a colour picked from the user's id. #}
+{% macro avatar(user, size="sm", v=None) -%}
+{% if v -%}
+<img class="avatar avatar-{{ size }} avatar-img" src="{{ url_for('main.avatar', user_id=user.id, v=v) }}" alt="">
+{%- else -%}
+{% set colors = ["#c2410c", "#6f42c1", "#0f766e", "#1d4ed8", "#be185d"] %}
+<span class="avatar avatar-{{ size }}" style="--av: {{ colors[(user.id or 0) % 5] }}" aria-hidden="true">{{ (user.username or "?")[:2]|upper }}</span>
+{%- endif %}
+{%- endmacro %}

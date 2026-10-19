@@ -1,8 +1,313 @@
 {% extends "base.html" %}
+{% block title %}Profile &middot; Hibi{% endblock %}
+
 {% block content %}
-<h1 class="h3 mb-3">Profile</h1>
-<div class="card p-3" style="max-width: 400px;">
-  <p class="mb-1"><strong>Username:</strong> {{ current_user.username }}</p>
-  <p class="mb-0"><strong>Days logged:</strong> {{ total_logs }}</p>
+{% from "_avatar.html" import avatar %}
+
+<!-- header: avatar, name, account facts -->
+<div class="card profile-head mb-3">
+  <div class="d-flex align-items-center gap-3 flex-wrap">
+    {% set ver = avatar_version(current_user) %}
+    <div class="text-center avatar-edit">
+      {{ avatar(current_user, "lg", ver) }}
+      <form method="post" action="{{ url_for('main.upload_avatar') }}" enctype="multipart/form-data" id="avatar-form" class="mt-3">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="file" name="avatar" id="avatar-file" class="visually-hidden" accept="image/png,image/jpeg,image/webp">
+        <input type="hidden" name="cx" id="f-cx"><input type="hidden" name="cy" id="f-cy"><input type="hidden" name="size" id="f-size">
+        <label for="avatar-file" class="btn btn-outline-primary btn-sm">{{ "Change photo" if ver else "Add photo" }}</label>
+      </form>
+      {% if ver %}
+      <div class="mt-1 d-flex justify-content-center align-items-center gap-1">
+        <button type="button" class="btn btn-link btn-sm py-0" id="adjust-btn"
+                data-src="{{ url_for('main.avatar_source', user_id=current_user.id, v=ver) }}"
+                data-crop='{{ avatar_crop(current_user)|tojson }}'>Adjust</button>
+        <form method="post" action="{{ url_for('main.remove_avatar') }}" class="d-inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button class="btn btn-link btn-sm text-muted py-0" type="submit">Remove</button>
+        </form>
+      </div>
+      <form method="post" action="{{ url_for('main.adjust_avatar') }}" id="adjust-form" hidden>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="cx" id="a-cx"><input type="hidden" name="cy" id="a-cy"><input type="hidden" name="size" id="a-size">
+      </form>
+      {% endif %}
+      <div class="small text-muted mt-1" style="max-width: 130px;">JPG, PNG or WebP, up to 3 MB</div>
+    </div>
+    <div class="flex-grow-1">
+      <h1 class="h3 mb-0">{{ current_user.username }}</h1>
+      {% if current_user.email %}<div class="text-muted">{{ current_user.email }}</div>{% endif %}
+      <div class="small text-muted mt-1">
+        {% if member_since %}Member since {{ member_since.strftime("%b %d, %Y") }}{% endif %}
+        {% if first_log %}{% if member_since %} &middot; {% endif %}First log {{ first_log.strftime("%b %d, %Y") }}{% endif %}
+      </div>
+      <div class="mt-2 d-flex gap-2 flex-wrap">
+        <span class="streak-chip"><img src="{{ url_for('static', filename='img/hibi-icon.svg') }}" alt="">{{ current_streak }}-day running streak</span>
+        <span class="streak-chip" style="background:#f1efee; color:#495057;">Best streak {{ best_streak }}</span>
+      </div>
+    </div>
+    <a class="btn btn-outline-primary" href="{{ url_for('main.dashboard') }}">Full dashboard</a>
+  </div>
 </div>
+
+<!-- headline numbers -->
+<div class="row g-3 mb-3">
+  <div class="col-6 col-lg-3"><div class="card stat-tile">
+    <div class="label">Days logged</div><div class="value">{{ total_logs }}</div><div class="sub">all time</div>
+  </div></div>
+  <div class="col-6 col-lg-3"><div class="card stat-tile">
+    <div class="label">Average score</div>
+    <div class="value">{% if summary.avg_score is defined and summary.avg_score is not none %}{{ summary.avg_score }}%{% else %}&ndash;{% endif %}</div>
+    <div class="sub">share of goals met per day</div>
+  </div></div>
+  <div class="col-6 col-lg-3"><div class="card stat-tile">
+    <div class="label">Best day</div>
+    <div class="value">{% if summary.best_score is defined and summary.best_score is not none %}{{ summary.best_score }}%{% else %}&ndash;{% endif %}</div>
+    <div class="sub">{{ summary.best_day if summary.best_day is defined and summary.best_day else "no data yet" }}</div>
+  </div></div>
+  <div class="col-6 col-lg-3"><div class="card stat-tile">
+    <div class="label">This week</div><div class="value">{{ week_percent }}%</div><div class="sub">of goals achieved</div>
+  </div></div>
+</div>
+
+<div class="row g-3">
+  <!-- habits: how often each goal is met -->
+  <div class="col-lg-8">
+    <div class="card p-3 h-100">
+      <h2 class="h6 mb-3">Your habits</h2>
+      {% if habits %}
+      <div class="table-responsive">
+        <table class="table table-sm align-middle mb-0">
+          <thead><tr class="text-muted small"><th>Habit</th><th style="width:34%">Goal met</th><th class="text-end">Streak</th><th class="text-end">Best</th></tr></thead>
+          <tbody>
+            {% for h in habits %}
+            <tr>
+              <td><span class="dot" style="background: {{ h.color }}"></span>{{ h.name }}</td>
+              <td>
+                <div class="d-flex align-items-center gap-2">
+                  <div class="progress goal-bar flex-grow-1"><div class="progress-bar" style="width: {{ h.met_rate }}%; background: {{ h.color }}"></div></div>
+                  <span class="small text-muted" style="width: 3.2em; text-align: right;">{{ h.met_rate|round|int }}%</span>
+                </div>
+              </td>
+              <td class="text-end">{{ h.current_streak }}</td>
+              <td class="text-end">{{ h.best_streak }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% if top_habit %}<p class="small text-muted mt-3 mb-0">Your most consistent habit: <strong>{{ top_habit.name }}</strong> ({{ top_habit.met_rate|round|int }}% of days).</p>{% endif %}
+      {% else %}
+      <p class="text-muted mb-0">Log a few days and your habits will show up here.</p>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- ML estimate summary -->
+  <div class="col-lg-4">
+    <div class="card p-3 h-100">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <h2 class="h6 mb-0">Estimated score</h2>
+        <span class="badge bg-warning text-dark">Experimental</span>
+      </div>
+      {% if estimate and estimate.status == "ok" %}
+        {% set colors = {"low": "#e5484d", "medium": "#f5a623", "high": "#30a46c"} %}
+        <div class="d-flex align-items-baseline gap-2">
+          <span class="display-6 fw-semibold">{{ estimate.score }}</span><span class="text-muted">/ 100</span>
+          <span class="badge ms-auto" style="background: {{ colors[estimate.level] }}">{{ estimate.level|capitalize }}</span>
+        </div>
+        {% if estimate.range_lo is not none %}<p class="small mb-2">Likely between {{ estimate.range_lo|round|int }} and {{ estimate.range_hi|round|int }}.</p>{% endif %}
+        <p class="small text-muted">Based on {{ estimate.source }}. From a model trained on simulated data.</p>
+        <div class="small">
+          <a href="{{ url_for('insights.estimate_log', log_id=estimate.log_id) }}">Details</a>
+          <span class="text-muted">&middot;</span>
+          <a href="{{ url_for('insights.index') }}">Try your own numbers</a>
+        </div>
+      {% elif estimate and estimate.message %}
+        <p class="small text-muted mb-0">Can't estimate yet. {{ estimate.message }}</p>
+      {% else %}
+        <p class="small text-muted mb-0">Log a day to see an estimate.</p>
+      {% endif %}
+    </div>
+  </div>
+</div>
+<!-- photo adjuster: drag to move, slider / wheel / +- to zoom -->
+<div class="crop-overlay" id="crop-overlay" hidden>
+  <div class="crop-dialog card" role="dialog" aria-modal="true" aria-labelledby="crop-title">
+    <h2 class="h5 mb-1" id="crop-title">Adjust your photo</h2>
+    <p class="small text-muted mb-3">Drag to move it, zoom with the slider or your mouse wheel. The circle is what will show.</p>
+    <div class="crop-stage" id="crop-stage" tabindex="0" aria-label="Photo position. Arrow keys move the photo, plus and minus zoom.">
+      <img id="crop-img" alt="" draggable="false">
+      <div class="crop-ring"></div>
+    </div>
+    <div class="d-flex align-items-center gap-2 mt-3">
+      <button type="button" class="btn btn-outline-secondary btn-sm" id="zoom-out" aria-label="Zoom out">&minus;</button>
+      <input type="range" class="form-range flex-grow-1" id="crop-zoom" min="1" max="4" step="0.01" value="1" aria-label="Zoom">
+      <button type="button" class="btn btn-outline-secondary btn-sm" id="zoom-in" aria-label="Zoom in">+</button>
+    </div>
+    <div class="d-flex justify-content-between align-items-center mt-3">
+      <button type="button" class="btn btn-link px-0" id="crop-reset">Reset</button>
+      <div class="d-flex gap-2">
+        <button type="button" class="btn btn-outline-secondary" id="crop-cancel">Cancel</button>
+        <button type="button" class="btn btn-primary" id="crop-save">Save photo</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  (function () {
+    var overlay = document.getElementById("crop-overlay");
+    var stage = document.getElementById("crop-stage");
+    var img = document.getElementById("crop-img");
+    var zoomEl = document.getElementById("crop-zoom");
+    var saveBtn = document.getElementById("crop-save");
+    var fileInput = document.getElementById("avatar-file");
+    var newForm = document.getElementById("avatar-form");
+    var adjustForm = document.getElementById("adjust-form");
+    var adjustBtn = document.getElementById("adjust-btn");
+    if (!overlay || !fileInput) return;
+
+    var MAX_BYTES = 3 * 1024 * 1024, ZMAX = 4;
+    var st = { mode: null, w: 0, h: 0, V: 0, base: 1, z: 1, ox: 0, oy: 0 };
+    var objectUrl = null, lastFocus = null, drag = null;
+
+    function k() { return st.base * st.z; }
+    function clamp01(v) { return Math.min(1, Math.max(0, v)); }
+
+    // keep the photo covering the whole frame
+    function limit() {
+      var s = k();
+      var mx = Math.max(0, (st.w * s - st.V) / 2), my = Math.max(0, (st.h * s - st.V) / 2);
+      st.ox = Math.min(mx, Math.max(-mx, st.ox));
+      st.oy = Math.min(my, Math.max(-my, st.oy));
+    }
+    function render() {
+      limit();
+      var s = k();
+      img.style.width = (st.w * s) + "px";
+      img.style.height = (st.h * s) + "px";
+      img.style.transform = "translate(calc(-50% + " + st.ox + "px), calc(-50% + " + st.oy + "px))";
+      zoomEl.value = st.z;
+    }
+    function setZoom(z) {
+      z = Math.min(ZMAX, Math.max(1, z));
+      var r = (st.base * z) / k();               // zoom around the frame's centre
+      st.ox *= r; st.oy *= r; st.z = z;
+      render();
+    }
+    // framing -> screen position (crop = centre cx, cy and size, all fractions)
+    function frame(crop) {
+      st.z = Math.min(ZMAX, Math.max(1, 1 / (crop.size || 1)));
+      var s = k();
+      st.ox = (st.w / 2 - crop.cx * st.w) * s;
+      st.oy = (st.h / 2 - crop.cy * st.h) * s;
+      render();
+    }
+    // screen position -> framing numbers the server uses
+    function params() {
+      var s = k();
+      return { cx: clamp01((st.w / 2 - st.ox / s) / st.w),
+               cy: clamp01((st.h / 2 - st.oy / s) / st.h),
+               size: 1 / st.z };
+    }
+
+    function open(src, crop, mode) {
+      st.mode = mode;
+      lastFocus = document.activeElement;
+      saveBtn.disabled = false;
+      overlay.hidden = false;
+      document.body.style.overflow = "hidden";
+      st.V = stage.clientWidth;
+      img.style.width = "0";
+      img.onload = function () {
+        st.w = img.naturalWidth; st.h = img.naturalHeight;
+        st.base = st.V / Math.min(st.w, st.h);
+        frame(crop || { cx: 0.5, cy: 0.5, size: 1 });
+        stage.focus();
+      };
+      img.onerror = function () { alert("That image couldn't be opened. Try another one."); close(); };
+      img.src = src;
+    }
+    function close() {
+      overlay.hidden = true;
+      document.body.style.overflow = "";
+      if (objectUrl) { URL.revokeObjectURL(objectUrl); objectUrl = null; }
+      if (st.mode === "new") fileInput.value = "";      // so the same file can be picked again
+      if (lastFocus && lastFocus.focus) lastFocus.focus();
+    }
+
+    // choose a file -> open the adjuster
+    fileInput.addEventListener("change", function () {
+      var f = fileInput.files[0];
+      if (!f) return;
+      if (!/^image\/(png|jpeg|webp)$/.test(f.type)) { alert("Use a JPG, PNG or WebP image."); fileInput.value = ""; return; }
+      if (f.size > MAX_BYTES) { alert("That photo is over 3 MB. Pick a smaller one."); fileInput.value = ""; return; }
+      objectUrl = URL.createObjectURL(f);
+      open(objectUrl, null, "new");
+    });
+    // re-adjust the photo that is already saved
+    if (adjustBtn) {
+      adjustBtn.addEventListener("click", function () {
+        open(adjustBtn.dataset.src, JSON.parse(adjustBtn.dataset.crop), "adjust");
+      });
+    }
+
+    // drag, wheel, buttons, keyboard
+    stage.addEventListener("pointerdown", function (e) {
+      drag = { x: e.clientX, y: e.clientY, ox: st.ox, oy: st.oy };
+      stage.setPointerCapture(e.pointerId);
+    });
+    stage.addEventListener("pointermove", function (e) {
+      if (!drag) return;
+      st.ox = drag.ox + (e.clientX - drag.x);
+      st.oy = drag.oy + (e.clientY - drag.y);
+      render();
+    });
+    ["pointerup", "pointercancel"].forEach(function (ev) {
+      stage.addEventListener(ev, function () { drag = null; });
+    });
+    stage.addEventListener("wheel", function (e) {
+      e.preventDefault();
+      setZoom(st.z * Math.exp(-e.deltaY * 0.0015));
+    }, { passive: false });
+    zoomEl.addEventListener("input", function () { setZoom(parseFloat(zoomEl.value)); });
+    document.getElementById("zoom-in").addEventListener("click", function () { setZoom(st.z + 0.25); });
+    document.getElementById("zoom-out").addEventListener("click", function () { setZoom(st.z - 0.25); });
+    document.getElementById("crop-reset").addEventListener("click", function () { frame({ cx: 0.5, cy: 0.5, size: 1 }); });
+    document.getElementById("crop-cancel").addEventListener("click", close);
+    overlay.addEventListener("mousedown", function (e) { if (e.target === overlay) close(); });
+
+    document.addEventListener("keydown", function (e) {
+      if (overlay.hidden) return;
+      if (e.key === "Escape") { close(); return; }
+      if (e.key === "Tab") {                              // keep focus inside the dialog
+        var items = overlay.querySelectorAll("button:not([disabled]), input, [tabindex='0']");
+        var first = items[0], last = items[items.length - 1];
+        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+        return;
+      }
+      if (document.activeElement !== stage) return;
+      var step = 12;
+      if (e.key === "ArrowLeft") { st.ox += step; }
+      else if (e.key === "ArrowRight") { st.ox -= step; }
+      else if (e.key === "ArrowUp") { st.oy += step; }
+      else if (e.key === "ArrowDown") { st.oy -= step; }
+      else if (e.key === "+" || e.key === "=") { setZoom(st.z + 0.1); return; }
+      else if (e.key === "-") { setZoom(st.z - 0.1); return; }
+      else { return; }
+      e.preventDefault(); render();
+    });
+
+    // save: send the framing numbers (the server does the cropping)
+    saveBtn.addEventListener("click", function () {
+      var p = params(), pre = st.mode === "new" ? "f-" : "a-";
+      document.getElementById(pre + "cx").value = p.cx.toFixed(4);
+      document.getElementById(pre + "cy").value = p.cy.toFixed(4);
+      document.getElementById(pre + "size").value = p.size.toFixed(4);
+      saveBtn.disabled = true;
+      st.mode === "new" ? newForm.submit() : adjustForm.submit();
+    });
+  })();
+</script>
 {% endblock %}

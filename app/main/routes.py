@@ -1,9 +1,12 @@
+import os
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
-from flask import (Blueprint, abort, flash, jsonify, redirect,
-                   render_template, request, url_for)
+from flask import (Blueprint, abort, current_app, flash, jsonify, redirect,
+                   render_template, request, send_from_directory, url_for)
 from flask_login import current_user, login_required
+from sqlalchemy import extract
 from flask_wtf import FlaskForm
 from wtforms import DateField, FloatField, SelectField, SubmitField
 from wtforms.validators import InputRequired
@@ -56,25 +59,65 @@ def _choice_label(habit, value):
 
 
 # ---------------------------------------------------------------- dashboard
-def build_dashboard(user):
+def heatmap_years(user):
+    """Calendar years in which the user has any log, newest first (this year always included)."""
+    rows = (db.session.query(extract("year", ProductivityLog.log_date))
+            .filter(ProductivityLog.user_id == user.id).distinct().all())
+    years = {int(r[0]) for r in rows if r[0] is not None}
+    years.add(date.today().year)
+    return sorted(years, reverse=True)
+
+
+def _streaks(by_date, range_start, range_end, today):
+    """(current streak, longest streak in the shown period), in consecutive logged days.
+
+    The current streak ends today, or yesterday if today is not logged yet, so it
+    does not drop to 0 every morning before you log.
+    """
+    logged = {dt for dt, l in by_date.items() if level(l) > 0}
+    best = run = 0
+    d = range_start
+    while d <= range_end:
+        run = run + 1 if d in logged else 0
+        best = max(best, run)
+        d += timedelta(days=1)
+    d = today if today in logged else today - timedelta(days=1)
+    current = 0
+    while d in logged:
+        current += 1
+        d -= timedelta(days=1)
+    return current, best
+
+
+def build_dashboard(user, year=None):
+    """Data for the home page. `year` picks a calendar year for the heatmap;
+    None means the rolling last 12 months (the past 52 weeks)."""
     today = date.today()
+    years = heatmap_years(user)
+    if year not in years:                         # None or a year with no logs
+        year = None
+    roll_start = today - timedelta(days=363)
+    if year:
+        range_start, range_end = date(year, 1, 1), min(date(year, 12, 31), today)
+    else:
+        range_start, range_end = roll_start, today
+    # the grid starts on the Sunday on or before the first day
+    start = range_start - timedelta(days=(range_start.weekday() + 1) % 7)
 
-    # Heatmap starts on a Sunday, about one year back
-    start = today - timedelta(days=363)
-    start -= timedelta(days=(start.weekday() + 1) % 7)
-
+    monday = today - timedelta(days=today.weekday())
     logs = ProductivityLog.query.filter(
         ProductivityLog.user_id == user.id,
-        ProductivityLog.log_date >= start,
+        ProductivityLog.log_date >= min(start, roll_start, monday),
+        ProductivityLog.log_date <= today,
     ).all()
     by_date = {l.log_date: l for l in logs}
 
     weeks, d = [], start
-    while d <= today:
+    while d <= range_end:
         week = []
         for _ in range(7):
-            if d > today:
-                week.append(None)
+            if d < range_start or d > range_end:
+                week.append(None)                 # outside the chosen period
             else:
                 log = by_date.get(d)
                 lvl = level(log) if log else 0
@@ -89,12 +132,20 @@ def build_dashboard(user):
 
     labels, prev = [], None
     for w in weeks:
-        month = date.fromisoformat(w[0]["date"]).strftime("%b")
-        labels.append(month if month != prev else "")
-        prev = month
+        first = next((c for c in w if c), None)   # a week can begin with blank cells
+        month = date.fromisoformat(first["date"]).strftime("%b") if first else ""
+        labels.append(month if month and month != prev else "")
+        if month:
+            prev = month
+
+    heat_count = sum(1 for dt, l in by_date.items()
+                     if range_start <= dt <= range_end and level(l) > 0)
+    streak_current, streak_longest = _streaks(by_date, range_start, range_end, today)
+    days_in_range = (range_end - range_start).days + 1
+    heat_options = [{"label": "Last 12 months", "year": None}] + [
+        {"label": str(y), "year": y} for y in years]
 
     # This week, Monday to Sunday
-    monday = today - timedelta(days=today.weekday())
     week_dates = [monday + timedelta(days=i) for i in range(7)]
     today_log = by_date.get(today)
 
@@ -140,7 +191,17 @@ def build_dashboard(user):
         "percent": percent,
         "today_index": today.weekday(),
         "today_logged": today_log is not None and level(today_log) > 0,
-        "total_logs": sum(1 for l in logs if level(l) > 0),
+        "total_logs": sum(1 for dt, l in by_date.items()
+                          if roll_start <= dt <= today and level(l) > 0),   # last 12 months
+        "heat_year": year,
+        "streak_current": streak_current,
+        "streak_longest": streak_longest,
+        "heat_pct": round(heat_count / days_in_range * 100),
+        "heat_title": str(year) if year else "Last 12 months",
+        "heat_count": heat_count,
+        "heat_options": heat_options,
+        "show_year_picker": any(y < today.year for y in years),     # only once there is an earlier year
+        "heat_scroll_end": year is None or year == today.year,
     }
 
 
@@ -148,7 +209,7 @@ def build_dashboard(user):
 def index():
     data = None
     if current_user.is_authenticated:
-        data = build_dashboard(current_user)
+        data = build_dashboard(current_user, request.args.get("year", type=int))
         data["estimate"] = latest_estimate(current_user.id)
     return render_template("index.html", data=data)
 
@@ -320,8 +381,231 @@ def toggle_habit(key):
     return redirect(url_for("main.index"))
 
 
+
+# ------------------------------------------------------------- profile photo
+# Per user, in instance/avatars/:
+#   <id>.src.jpg   the uploaded photo, re-encoded (<= 1280 px), kept so the
+#                  user can re-adjust later without uploading again
+#   <id>.json      the framing: centre (cx, cy) and zoom, as fractions
+#   <id>.jpg       the 256 px square avatar the site shows
+# Uploads are never stored as sent: Pillow decodes them, which also strips
+# metadata and anything hidden in the file. The browser only sends the framing
+# numbers; the server does the cropping.
+import json
+import math
+
+AVATAR_MAX_BYTES = 3 * 1024 * 1024
+AVATAR_SIZE = 256
+AVATAR_SOURCE_MAX = 1280
+AVATAR_FORMATS = {"JPEG", "PNG", "WEBP"}
+AVATAR_MAX_PIXELS = 25_000_000        # refuse decompression bombs
+
+
+def _avatar_dir() -> Path:
+    return Path(current_app.instance_path) / "avatars"
+
+
+def _avatar_file(user_id: int, kind: str = "jpg") -> Path:
+    suffix = {"jpg": ".jpg", "src": ".src.jpg", "json": ".json"}[kind]
+    return _avatar_dir() / f"{int(user_id)}{suffix}"
+
+
+def _read_crop(user_id: int) -> dict:
+    try:
+        return json.loads(_avatar_file(user_id, "json").read_text())
+    except (OSError, ValueError):
+        return {"cx": 0.5, "cy": 0.5, "size": 1.0}
+
+
+@main_bp.app_context_processor
+def _avatar_helpers():
+    """avatar_version(user) -> int or None; avatar_crop(user) -> framing dict."""
+    def avatar_version(user):
+        try:
+            return int(_avatar_file(user.id).stat().st_mtime)
+        except (OSError, AttributeError, TypeError):
+            return None
+
+    def avatar_crop(user):
+        return _read_crop(user.id)
+    return {"avatar_version": avatar_version, "avatar_crop": avatar_crop}
+
+
+def _serve_avatar(user_id, kind):
+    if user_id != current_user.id:                    # photos are private for now
+        abort(404)
+    path = _avatar_file(user_id, kind)
+    if not path.exists():
+        abort(404)
+    resp = send_from_directory(path.parent, path.name, mimetype="image/jpeg",
+                               conditional=True, max_age=3600)
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    return resp
+
+
+@main_bp.route("/avatar/<int:user_id>")
+@login_required
+def avatar(user_id):
+    return _serve_avatar(user_id, "jpg")
+
+
+@main_bp.route("/avatar/<int:user_id>/source")
+@login_required
+def avatar_source(user_id):
+    return _serve_avatar(user_id, "src")
+
+
+def _crop_params(form) -> dict:
+    """Framing from the form, clamped. Anything missing or odd means 'centred'."""
+    def num(name, default, lo, hi):
+        try:
+            value = float(form.get(name, default))
+        except (TypeError, ValueError):
+            return default
+        return min(hi, max(lo, value)) if math.isfinite(value) else default
+    return {"cx": num("cx", 0.5, 0.0, 1.0),
+            "cy": num("cy", 0.5, 0.0, 1.0),
+            "size": num("size", 1.0, 0.05, 1.0)}
+
+
+def _load_source(raw: bytes):
+    """Validate an uploaded image; return an RGB, upright, <=1280 px PIL image."""
+    from io import BytesIO
+    from PIL import Image, ImageOps, UnidentifiedImageError
+
+    Image.MAX_IMAGE_PIXELS = AVATAR_MAX_PIXELS
+    try:
+        img = Image.open(BytesIO(raw))
+        if img.format not in AVATAR_FORMATS:
+            raise ValueError("Use a JPG, PNG or WebP image.")
+        if img.width * img.height > AVATAR_MAX_PIXELS:   # Pillow only warns below 2x its limit
+            raise ValueError("That image is too large. Use one under about 25 megapixels.")
+        img.load()                                     # fully decode (catches truncated files)
+    except (UnidentifiedImageError, Image.DecompressionBombError, OSError, SyntaxError):
+        raise ValueError("That file isn't a valid image.")
+    img = ImageOps.exif_transpose(img)                 # respect phone-camera rotation
+    if img.mode in ("RGBA", "LA", "P"):                # flatten transparency onto white
+        img = img.convert("RGBA")
+        flat = Image.new("RGB", img.size, (255, 255, 255))
+        flat.paste(img, mask=img.split()[-1])
+        img = flat
+    else:
+        img = img.convert("RGB")
+    img.thumbnail((AVATAR_SOURCE_MAX, AVATAR_SOURCE_MAX), Image.LANCZOS)
+    if min(img.size) < 32:
+        raise ValueError("That image is too small. Use one at least 32 px wide and tall.")
+    return img
+
+
+def _jpeg(img, quality) -> bytes:
+    from io import BytesIO
+    out = BytesIO()
+    img.save(out, "JPEG", quality=quality, optimize=True)
+    return out.getvalue()
+
+
+def _crop_avatar(img, crop: dict):
+    """Square crop around (cx, cy), `size` of the shorter side, as a 256 px image."""
+    from PIL import Image
+    w, h = img.size
+    side = max(8, round(crop["size"] * min(w, h)))
+    left = max(0, min(round(crop["cx"] * w - side / 2), w - side))
+    top = max(0, min(round(crop["cy"] * h - side / 2), h - side))
+    return img.crop((left, top, left + side, top + side)).resize(
+        (AVATAR_SIZE, AVATAR_SIZE), Image.LANCZOS)
+
+
+def _write_atomic(path: Path, data: bytes) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, path)                              # never a half-written file
+
+
+def _save_avatar(user_id: int, source, crop: dict) -> None:
+    _avatar_dir().mkdir(parents=True, exist_ok=True)
+    _write_atomic(_avatar_file(user_id, "src"), _jpeg(source, 90))
+    _write_atomic(_avatar_file(user_id, "json"), json.dumps(crop).encode())
+    _write_atomic(_avatar_file(user_id), _jpeg(_crop_avatar(source, crop), 88))
+
+
+@main_bp.route("/profile/avatar", methods=["POST"])
+@login_required
+def upload_avatar():
+    file = request.files.get("avatar")
+    if file is None or not file.filename:
+        flash("Choose a photo first.", "danger")
+        return redirect(url_for("main.profile"))
+    raw = file.stream.read(AVATAR_MAX_BYTES + 1)
+    if len(raw) > AVATAR_MAX_BYTES:
+        flash("That photo is too big. The limit is 3 MB.", "danger")
+        return redirect(url_for("main.profile"))
+    try:
+        source = _load_source(raw)
+    except ImportError:
+        flash("Photo upload needs Pillow: run  pip install pillow", "danger")
+        return redirect(url_for("main.profile"))
+    except ValueError as exc:
+        flash(str(exc), "danger")
+        return redirect(url_for("main.profile"))
+
+    _save_avatar(current_user.id, source, _crop_params(request.form))
+    flash("Profile photo updated.", "success")
+    return redirect(url_for("main.profile"))
+
+
+@main_bp.route("/profile/avatar/adjust", methods=["POST"])
+@login_required
+def adjust_avatar():
+    """Re-frame the photo already uploaded (no new upload needed)."""
+    from PIL import Image
+    try:
+        with Image.open(_avatar_file(current_user.id, "src")) as im:
+            source = im.convert("RGB")
+    except (OSError, ImportError):
+        flash("There is no photo to adjust yet. Upload one first.", "danger")
+        return redirect(url_for("main.profile"))
+    _save_avatar(current_user.id, source, _crop_params(request.form))
+    flash("Photo position saved.", "success")
+    return redirect(url_for("main.profile"))
+
+
+@main_bp.route("/profile/avatar/remove", methods=["POST"])
+@login_required
+def remove_avatar():
+    removed = False
+    for kind in ("jpg", "src", "json"):
+        try:
+            _avatar_file(current_user.id, kind).unlink()
+            removed = True
+        except FileNotFoundError:
+            pass
+    if removed:
+        flash("Profile photo removed.", "info")
+    return redirect(url_for("main.profile"))
+
 @main_bp.route("/profile")
 @login_required
 def profile():
+    try:
+        stats = dashboard_stats(current_user) or {}
+    except Exception:                       # the profile must open even if stats break
+        current_app.logger.exception("profile stats failed")
+        stats = {}
+    habits = [] if stats.get("empty") else (stats.get("habits") or [])
+
+    first = (ProductivityLog.query.filter_by(user_id=current_user.id)
+             .order_by(ProductivityLog.log_date.asc()).first())
     total = ProductivityLog.query.filter_by(user_id=current_user.id).count()
-    return render_template("profile.html", total_logs=total)
+    return render_template(
+        "profile.html",
+        summary=stats.get("summary") or {},
+        habits=habits,
+        top_habit=max(habits, key=lambda h: h["met_rate"], default=None),
+        current_streak=max((h["current_streak"] for h in habits), default=0),
+        best_streak=max((h["best_streak"] for h in habits), default=0),
+        total_logs=total,
+        first_log=first.log_date if first else None,
+        member_since=getattr(current_user, "created_at", None),
+        week_percent=build_dashboard(current_user)["percent"],
+        estimate=latest_estimate(current_user.id),
+    )
