@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 
 {% block content %}
+{% from "_icons.html" import icon %}
 {% if data %}
 <div class="row g-4">
   <div class="col-lg-8">
@@ -32,7 +33,7 @@
       <tbody>
         {% for h in data.habits %}
         <tr>
-          <td class="habit-name"><span class="dot" style="background: {{ h.color }}"></span>{{ h.name }}</td>
+          <td class="habit-name"><span class="hicon-wrap" style="color: {{ h.color }}">{{ icon(h.field, 18) }}</span>{{ h.name }}</td>
           {% for done in h.days %}
             <td><div class="habit-cell{% if done is none %} nodata{% endif %}" {% if done %}style="background: {{ h.color }}"{% endif %}></div></td>
           {% endfor %}
@@ -180,6 +181,7 @@
           </details>
 
           <p class="small text-muted mb-1">Based on {{ e.source }}. Not a forecast for tomorrow.</p>
+          {% if e.filled %}<p class="small text-muted mb-1">Not tracked, so typical values are used for: {{ e.filled|join(", ") }}.</p>{% endif %}
           <a class="small" href="{{ url_for('insights.estimate_log', log_id=e.log_id) }}">Details</a>
           <span class="small text-muted">&middot;</span>
           <a class="small" href="{{ url_for('insights.index') }}">Try your own numbers</a>
@@ -210,7 +212,7 @@
       {% set state = h.days[data.today_index] %}
       <div class="today-item" style="border-left-color: {{ h.color }}">
         <div class="d-flex justify-content-between align-items-center">
-          <strong>{{ h.name }}</strong>
+          <strong class="d-flex align-items-center gap-2"><span style="color: {{ h.color }}">{{ icon(h.field, 18) }}</span>{{ h.name }}</strong>
           {% if state is none %}<span class="badge bg-light text-muted border">No data</span>
           {% elif state %}<span class="badge" style="background: {{ h.color }}">Done</span>
           {% else %}<span class="badge bg-secondary">Not met</span>{% endif %}
@@ -234,7 +236,7 @@
       {% set color = palette[loop.index0 % 4] %}
       <div class="today-item" style="border-left-color: {{ color }}">
         <div class="d-flex justify-content-between align-items-center">
-          <strong>{{ c.name }}</strong>
+          <strong class="d-flex align-items-center gap-2"><span style="color: {{ color }}">{{ icon(c.field, 18) }}</span>{{ c.name }}</strong>
           {% if c.shown %}<span class="badge" style="background: {{ color }}">{{ c.shown }}</span>
           {% else %}<span class="badge bg-light text-muted border">No data</span>{% endif %}
         </div>
@@ -242,6 +244,7 @@
       </div>
     {% endfor %}
     {% endif %}
+    <div class="text-center mt-2"><a class="small" href="{{ url_for('main.setup') }}">Change what you track</a></div>
   </div>
 
   </div>

@@ -366,6 +366,22 @@ def train_clustering(df: pd.DataFrame, num, cat):
     return pipeline, best_k, scores, profiles
 
 
+def typical_values(df: pd.DataFrame, num, cat) -> dict:
+    """Median (numbers) or most common value (text) of every feature.
+
+    The app uses these for habits a user chose not to track, so a skipped habit
+    neither adds to nor takes from the estimate.
+    """
+    out = {}
+    for c in num:
+        col = df[c].dropna()
+        med = float(col.median())
+        out[c] = int(round(med)) if (col % 1 == 0).all() else round(med, 1)
+    for c in cat:
+        out[c] = str(df[c].mode().iloc[0])
+    return out
+
+
 # ---------------------------------------------------------------------- main
 def main() -> None:
     df = load_data()
@@ -461,6 +477,7 @@ def main() -> None:
         "numeric_features": num,
         "categorical_features": cat,
         "categories": {c: sorted(df[c].astype(str).unique().tolist()) for c in cat},
+        "typical": typical_values(df, num, cat),
         "levels": LEVELS,
         "rows_trained_on": int(n),
         "split": split_info,

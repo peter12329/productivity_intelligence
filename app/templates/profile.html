@@ -3,6 +3,7 @@
 
 {% block content %}
 {% from "_avatar.html" import avatar %}
+{% from "_icons.html" import icon %}
 
 <!-- header: avatar, name, account facts -->
 <div class="card profile-head mb-3">
@@ -67,6 +68,17 @@
   <div class="col-6 col-lg-3"><div class="card stat-tile">
     <div class="label">This week</div><div class="value">{{ week_percent }}%</div><div class="sub">of goals achieved</div>
   </div></div>
+</div>
+
+<!-- what the user tracks -->
+<div class="card p-3 mb-3">
+  <div class="d-flex justify-content-between align-items-center mb-2">
+    <h2 class="h6 mb-0">What you track <span class="text-muted fw-normal">({{ tracking|length }} of {{ n_options }})</span></h2>
+    <a class="btn btn-outline-primary btn-sm" href="{{ url_for('main.setup') }}">Change</a>
+  </div>
+  <div class="d-flex flex-wrap gap-2">
+    {% for c in tracking %}<span class="track-chip">{{ icon(c.field, 16) }}{{ c.title }}</span>{% endfor %}
+  </div>
 </div>
 
 <div class="row g-3">

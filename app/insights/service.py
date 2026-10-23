@@ -39,7 +39,8 @@ from datetime import date, timedelta
 
 from flask import current_app
 
-from ml.predict import ModelsNotTrainedError, predict_day, suggest_levers
+from app.preferences import CORE_FIELDS, tracked_keys
+from ml.predict import ModelsNotTrainedError, model_info, predict_day, suggest_levers
 from ml.settings import FEATURES, LEVELS, LEVEL_BINS
 
 # dataset feature name -> ProductivityLog column
@@ -64,21 +65,28 @@ LABELS = {
     "caffeine_level": "Caffeine", "stress_level": "Stress",
     "disruptions": "Disruptions", "junk_food": "Junk food",
     "task_difficulty": "Task difficulty", "day_type": "Day type",
-    "weather": "Weather", "free_hours": "Free hours",
+    "weather": "Weather", "free_hours": "Free hours", "journaled": "Journaling",
 }
 
 RECENT_LOGS = 14
 HISTORY_DAYS = 32      # enough to compute a 14-day streak for a 14-day-old log
 
 
-def _inputs(log, by_date, log_streak, deep_work_days_prev7):
-    """Return (values, missing) for one log row."""
+def _inputs(log, by_date, log_streak, deep_work_days_prev7, fill=None):
+    """Return (values, missing) for one log row.
+
+    `fill` maps feature -> value for inputs the user chose not to track; those are
+    taken from `fill` instead of the log and are never reported as missing.
+    """
+    fill = fill or {}
     values, missing = {}, []
     for f in FEATURES:
         if f == "log_streak":
             values[f] = log_streak(by_date, log.log_date)
         elif f == "deep_work_days_prev7":
             values[f] = deep_work_days_prev7(by_date, log.log_date)
+        elif f in fill:
+            values[f] = fill[f]
         else:
             v = getattr(log, DB_FIELDS[f], None)
             if f in CHECK_FEATURES:
@@ -98,6 +106,38 @@ def _missing_message(log, missing):
             f"{names}. Log them to get an estimate.")
 
 
+# What a skipped (untracked) input is replaced with. train.py saves the real typical
+# values (medians / most common value of the training data) into metadata.json;
+# these are only the fallback until the models are retrained.
+FALLBACK_TYPICAL = {"caffeine_level": 3, "journaled": 0, "disruptions": 1, "junk_food": 0,
+                    "task_difficulty": 3, "day_type": "class", "weather": "sunny", "free_hours": 5}
+
+
+def _typicals():
+    try:
+        meta = model_info()
+    except Exception:                       # no models yet: predict_day will say so
+        meta = {}
+    typ = {**FALLBACK_TYPICAL, **(meta.get("typical") or {})}
+    for feature, cats in (meta.get("categories") or {}).items():
+        if cats and typ.get(feature) not in cats:      # never feed an unseen category
+            typ[feature] = cats[0]
+    return typ
+
+
+def fill_for_user(user_id):
+    """{feature: typical value} for the inputs this user chose not to track."""
+    from app.habits import BY_KEY, CONTEXT, HABITS
+    all_keys = [h["key"] for h in HABITS] + [c["key"] for c in CONTEXT]
+    core = {h["key"] for h in HABITS if h["field"] in CORE_FIELDS}
+    tracked = tracked_keys(user_id, all_keys, core)
+    tracked_fields = {BY_KEY[k]["field"] for k in tracked if k in BY_KEY}
+    skipped = [f for f in FEATURES if f in DB_FIELDS
+               and DB_FIELDS[f] not in CORE_FIELDS and DB_FIELDS[f] not in tracked_fields]
+    typ = _typicals()
+    return {f: typ[f] for f in skipped if f in typ}
+
+
 def _source(d):
     today = date.today()
     if d == today:
@@ -107,13 +147,14 @@ def _source(d):
     return f"your log from {d.isoformat()}"
 
 
-def _ok(log, values, result):
+def _ok(log, values, result, filled=()):
     """Everything the home-page card shows for a complete day."""
     score = result["predicted_score"]
     err = result["typical_error_points"]
     d = log.log_date
     try:
-        levers = suggest_levers(values)
+        # only suggest changes to habits the user actually tracks (not filled-in ones)
+        levers = [l for l in suggest_levers(values, top=8) if l["feature"] not in filled][:3]
     except Exception:                       # the extras must never break the card
         current_app.logger.exception("ML levers failed")
         levers = []
@@ -130,6 +171,7 @@ def _ok(log, values, result):
         "low_below": LEVEL_BINS[1],
         "high_from": LEVEL_BINS[2],
         "levers": levers,
+        "filled": [LABELS.get(f, f) for f in filled],     # skipped habits, shown on the card
         "source": _source(d),
         "log_id": log.id,
         "log_date": d.isoformat() if hasattr(d, "isoformat") else str(d),
@@ -165,16 +207,17 @@ def latest_estimate(user_id: int):
             return {"status": "no_log"}
         by_date = {r.log_date: r for r in rows}
 
+        fill = fill_for_user(user_id)
         newest_missing = None
         for log in rows[:RECENT_LOGS]:
             values, missing = _inputs(log, by_date, log_streak,
-                                      deep_work_days_prev7)
+                                      deep_work_days_prev7, fill)
             if missing:
                 if newest_missing is None:
                     newest_missing = (log, missing)
                 continue
             result = predict_day(values)
-            return _ok(log, values, result)
+            return _ok(log, values, result, fill)
 
         log, missing = newest_missing
         return {"status": "incomplete", "message": _missing_message(log, missing)}

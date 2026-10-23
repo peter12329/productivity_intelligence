@@ -2,6 +2,7 @@
 {% block title %}{{ habit.name }}{% endblock %}
 
 {% block content %}
+{% from "_icons.html" import icon %}
 <style>
   /* keep the goal tick readable on a selected (blue) chip */
   .btn-check:checked + .btn .text-success, .btn-primary .text-success { color: inherit !important; }
@@ -9,7 +10,7 @@
 {% set val = form.value.data %}
 <div class="row justify-content-center">
   <div class="col-md-7 col-lg-5">
-    <h1 class="h4 mb-1"><span class="dot" style="background: {{ habit.color }}"></span>{{ habit.name }}</h1>
+    <h1 class="h4 mb-1"><span class="hicon-wrap" style="color: {{ habit.color }}">{{ icon(habit.field, 24) }}</span>{{ habit.name }}</h1>
     <p class="text-muted mb-3">
       {% if has_goal %}Goal: {{ habit.name }}.{% else %}No goal here. It is context the estimate uses.{% endif %}
       {% if habit.choices %}Choose your {{ habit.label|lower }}.{% else %}Enter your {{ habit.label|lower }}{% if habit.unit %} in {{ habit.unit }}{% endif %}.{% endif %}

@@ -15,7 +15,7 @@ from flask_login import current_user, login_required
 # (Aliased to `insights`, so both `from app.insights import bp` and
 # `from app.insights.routes import insights` keep working.)
 from app.insights import bp as insights
-from app.insights.service import HISTORY_DAYS, LABELS, _inputs
+from app.insights.service import HISTORY_DAYS, LABELS, _inputs, fill_for_user
 from app.models import ProductivityLog
 from ml.predict import (ModelsNotTrainedError, data_stage, model_info,
                         predict_day)
@@ -87,25 +87,48 @@ def _read_form():
     return values
 
 
+def _check_numbers(values):
+    """First problem in the typed numbers as (field, message), else None.
+
+    Friendly wording for the form. predict_day re-checks everything too.
+    """
+    for name in FEATURES:
+        if name not in NUMBER_SPEC:
+            continue
+        label, lo, hi, _step, _default = NUMBER_SPEC[name]
+        short = label.split(" (")[0]
+        try:
+            number = float(values[name])
+        except (TypeError, ValueError):
+            return name, f"{short}: enter a number."
+        if number != number or not lo <= number <= hi:      # NaN fails too
+            return name, f"{short} must be between {lo:g} and {hi:g}."
+    return None
+
+
 @insights.route("/", methods=["GET", "POST"])
 @login_required
 def index():
     categories, trained = _categories()
-    values, result, error = {}, None, None
+    values, result, error, error_field = {}, None, None, None
 
     if request.method == "POST":
         values = _read_form()
-        try:
-            result = predict_day(values)
-        except ModelsNotTrainedError:
-            trained = False
-        except ValueError as exc:
-            error = str(exc)
+        problem = _check_numbers(values)
+        if problem:
+            error_field, error = problem
+        else:
+            try:
+                result = predict_day(values)
+            except ModelsNotTrainedError:
+                trained = False
+            except ValueError as exc:
+                error = str(exc)
 
     n_logs = ProductivityLog.query.filter_by(user_id=current_user.id).count()
     return render_template(
         "insights/index.html", fields=_fields(values, categories),
-        trained=trained, result=result, error=error,
+        trained=trained, result=result, error=error, error_field=error_field,
         n_logs=n_logs, stage=data_stage(n_logs))
 
 
@@ -125,7 +148,8 @@ def estimate_log(log_id):
         ProductivityLog.log_date <= log.log_date).all()
     by_date = {r.log_date: r for r in history}
 
-    values, missing = _inputs(log, by_date, log_streak, deep_work_days_prev7)
+    fill = fill_for_user(current_user.id)
+    values, missing = _inputs(log, by_date, log_streak, deep_work_days_prev7, fill)
     ctx = {"log": log, "result": None, "message": None,
            "rows": [], "drivers": []}
 
@@ -144,7 +168,7 @@ def estimate_log(log_id):
         ctx["message"] = str(exc)
         return render_template("insights/estimate.html", **ctx)
 
-    ctx["rows"] = [(_pretty(f), values[f]) for f in FEATURES]
+    ctx["rows"] = [(_pretty(f) + (" (typical value, not tracked)" if f in fill else ""), values[f]) for f in FEATURES]
     importance = (info.get("feature_importance") or {}).get("regressor") or {}
     ctx["drivers"] = [(_pretty(k), round(v * 100))
                       for k, v in list(importance.items())[:5]]

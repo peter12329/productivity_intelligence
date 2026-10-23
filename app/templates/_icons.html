@@ -1,0 +1,10 @@
+{# Habit icons from static/img/habit-icons.svg. Pass a database field name
+   (study_hours, sleep_hours, ...) or an icon name (check, lock). Colour comes
+   from the surrounding text colour. #}
+{% macro icon(name, size=20) -%}
+{% set names = {
+  "study_hours": "target", "sleep_hours": "moon", "stress_level": "pulse", "caffeine_mg": "cup",
+  "journaled": "notebook", "junk_food": "burger", "disruptions": "bell", "study_sessions": "layers",
+  "free_hours": "clock", "task_difficulty": "mountain", "day_type": "calendar", "weather": "cloudsun"} %}
+<svg class="hicon" width="{{ size }}" height="{{ size }}" aria-hidden="true" focusable="false"><use href="{{ url_for('static', filename='img/habit-icons.svg') }}#{{ names.get(name, name if name in ['check', 'lock'] else 'dot') }}"/></svg>
+{%- endmacro %}

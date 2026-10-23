@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}What do you track? &middot; Hibi{% endblock %}
+
+{% block content %}
+{% from "_icons.html" import icon %}
+<div class="setup-wrap">
+  <div class="text-center mb-4">
+    <img class="setup-logo" src="{{ url_for('static', filename='img/hibi-icon.svg') }}" alt="">
+    <h1 class="h3 mb-1">{{ "What do you track?" if editing else "What do you want to track?" }}</h1>
+    <p class="text-muted mb-0">
+      {% if editing %}Change this any time. Your past logs are kept, just hidden for habits you turn off.
+      {% else %}Pick what fits your day. You can change this any time from your profile.{% endif %}
+    </p>
+  </div>
+
+  <form method="post" id="setup-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+    {% for title, hint, cards in groups %}
+    {% if cards %}
+    <section class="setup-group">
+      <div class="d-flex justify-content-between align-items-baseline flex-wrap gap-1">
+        <h2 class="h6 mb-0">{{ title }}</h2>
+        <span class="small text-muted">{{ hint }}</span>
+      </div>
+      <div class="setup-grid">
+        {% for c in cards %}
+        <label class="pick" style="--c: {{ c.color }}">
+          {% if c.locked %}
+            <input type="hidden" name="track" value="{{ c.key }}">
+            <input type="checkbox" checked disabled>
+          {% else %}
+            <input type="checkbox" name="track" value="{{ c.key }}" {% if c.on %}checked{% endif %}>
+          {% endif %}
+          <span class="pick-body">
+            <span class="pick-icon">{{ icon(c.field, 24) }}</span>
+            <span class="pick-text"><strong>{{ c.title }}</strong><small>{{ c.blurb }}</small></span>
+            <span class="pick-state" {% if c.locked %}title="Always on"{% endif %}>{{ icon("lock" if c.locked else "check", 16) }}</span>
+          </span>
+        </label>
+        {% endfor %}
+      </div>
+    </section>
+    {% endif %}
+    {% endfor %}
+
+    <div class="setup-footer">
+      <span class="small text-muted" id="setup-count" aria-live="polite"></span>
+      <div class="d-flex gap-2 align-items-center">
+        {% if editing %}<a class="btn btn-link" href="{{ url_for('main.profile') }}">Cancel</a>{% endif %}
+        <button class="btn btn-primary btn-lg px-5" type="submit">{{ "Save" if editing else "Continue" }}</button>
+      </div>
+    </div>
+  </form>
+</div>
+
+<script>
+  (function () {
+    var boxes = document.querySelectorAll("#setup-form .pick input[type=checkbox]");
+    var out = document.getElementById("setup-count");
+    function update() {
+      var on = 0;
+      boxes.forEach(function (b) { if (b.checked) on++; });
+      out.textContent = on + " of " + boxes.length + " selected";
+    }
+    boxes.forEach(function (b) { b.addEventListener("change", update); });
+    update();
+  })();
+</script>
+{% endblock %}

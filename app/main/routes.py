@@ -1,3 +1,4 @@
+import math
 import os
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -11,6 +12,7 @@ from flask_wtf import FlaskForm
 from wtforms import DateField, FloatField, SelectField, SubmitField
 from wtforms.validators import InputRequired
 
+from app import preferences as prefs
 from app.extensions import db
 from app.habits import BY_KEY, CONTEXT, HABITS, goals_met, is_met, level
 from app.insights.service import latest_estimate
@@ -59,6 +61,98 @@ def _choice_label(habit, value):
 
 
 # ---------------------------------------------------------------- dashboard
+# ----------------------------------------------------- what each user tracks
+# Card text for the setup page, by database field (falls back to the habit's own name).
+UI_TITLES = {
+    "study_hours": "Deep work", "sleep_hours": "Sleep", "stress_level": "Stress",
+    "caffeine_mg": "Caffeine", "journaled": "Journaling", "junk_food": "Junk food",
+    "disruptions": "Disruptions", "study_sessions": "Deep work sessions",
+    "free_hours": "Free hours", "task_difficulty": "Task difficulty",
+    "day_type": "Day type", "weather": "Weather",
+}
+UI_BLURBS = {
+    "study_hours": "Hours of focused work",
+    "sleep_hours": "How long you slept",
+    "stress_level": "How stressed you felt, 1 to 10",
+    "caffeine_mg": "Your caffeine level, 0 to 10",
+    "journaled": "One tap when you have journaled",
+    "junk_food": "Whether you had junk food",
+    "disruptions": "Interruptions during focus time",
+    "study_sessions": "How many focused sessions",
+    "free_hours": "Free time in your day",
+    "task_difficulty": "How hard the day's work is",
+    "day_type": "Class day, deadline, free day",
+    "weather": "Sunny, rainy, and so on",
+}
+CONTEXT_COLORS = ["#0dcaf0", "#fd7e14", "#20c997", "#6f42c1"]
+
+
+def _all_keys():
+    return [h["key"] for h in HABITS] + [c["key"] for c in CONTEXT]
+
+
+def _core_keys():
+    return {h["key"] for h in HABITS if h["field"] in prefs.CORE_FIELDS}
+
+
+def tracking_for(user):
+    """(tracked keys, visible habits, visible context inputs) for this user."""
+    keys = prefs.tracked_keys(user.id, _all_keys(), _core_keys())
+    return keys, [h for h in HABITS if h["key"] in keys], [c for c in CONTEXT if c["key"] in keys]
+
+
+def _is_logged(log, visible):
+    """A day counts as logged when any habit the user tracks has a value."""
+    return any(getattr(log, h["field"], None) is not None for h in visible)
+
+
+def _met_count(log, visible):
+    return sum(1 for h in visible if is_met(h, log) is True)
+
+
+def _level(log, visible):
+    """0 = nothing logged, 1-4 = share of the user's own goals met."""
+    if not visible or not _is_logged(log, visible):
+        return 0
+    return max(1, min(4, math.ceil(4 * _met_count(log, visible) / len(visible))))
+
+
+def _filter_stats(stats, user):
+    """Hide untracked habits from the stats page / API (stats.py counts them all)."""
+    if not stats or stats.get("empty"):
+        return stats
+    keys, _, _ = tracking_for(user)
+    by_name = {h["name"]: h["key"] for h in HABITS}
+    fields = {BY_KEY[k]["field"] for k in keys if k in BY_KEY}
+    every_field = {b["field"] for b in list(HABITS) + list(CONTEXT)}
+    out = dict(stats)
+    if "habits" in out:
+        out["habits"] = [h for h in out["habits"]
+                         if by_name.get(h.get("name")) is None or by_name[h["name"]] in keys]
+    if "correlations" in out:
+        out["correlations"] = {f: r for f, r in out["correlations"].items()
+                               if f in fields or f not in every_field}
+    return out
+
+
+def _setup_cards(current):
+    """Cards for the setup page: (group title, hint, cards)."""
+    core = _core_keys()
+
+    def card(b, i=0):
+        field = b["field"]
+        return {"key": b["key"], "field": field, "locked": b["key"] in core, "on": b["key"] in current,
+                "title": UI_TITLES.get(field, b["name"]), "blurb": UI_BLURBS.get(field, ""),
+                "color": b.get("color") or CONTEXT_COLORS[i % len(CONTEXT_COLORS)]}
+
+    return [
+        ("Always on", "The estimate needs these, so they stay on.", [card(h) for h in HABITS if h["key"] in core]),
+        ("Optional habits", "Turn off anything you do not do.", [card(h) for h in HABITS if h["key"] not in core]),
+        ("Quick context", "Day details that help the estimate. Skip any and typical values are used.",
+         [card(c, i) for i, c in enumerate(CONTEXT)]),
+    ]
+
+
 def heatmap_years(user):
     """Calendar years in which the user has any log, newest first (this year always included)."""
     rows = (db.session.query(extract("year", ProductivityLog.log_date))
@@ -68,13 +162,13 @@ def heatmap_years(user):
     return sorted(years, reverse=True)
 
 
-def _streaks(by_date, range_start, range_end, today):
+def _streaks(by_date, range_start, range_end, today, is_logged):
     """(current streak, longest streak in the shown period), in consecutive logged days.
 
     The current streak ends today, or yesterday if today is not logged yet, so it
     does not drop to 0 every morning before you log.
     """
-    logged = {dt for dt, l in by_date.items() if level(l) > 0}
+    logged = {dt for dt, l in by_date.items() if is_logged(l)}
     best = run = 0
     d = range_start
     while d <= range_end:
@@ -93,6 +187,7 @@ def build_dashboard(user, year=None):
     """Data for the home page. `year` picks a calendar year for the heatmap;
     None means the rolling last 12 months (the past 52 weeks)."""
     today = date.today()
+    tracked, visible, visible_ctx = tracking_for(user)
     years = heatmap_years(user)
     if year not in years:                         # None or a year with no logs
         year = None
@@ -120,8 +215,8 @@ def build_dashboard(user, year=None):
                 week.append(None)                 # outside the chosen period
             else:
                 log = by_date.get(d)
-                lvl = level(log) if log else 0
-                tip = (f"{d.isoformat()}: {goals_met(log)}/{len(HABITS)} goals"
+                lvl = _level(log, visible) if log else 0
+                tip = (f"{d.isoformat()}: {_met_count(log, visible)}/{len(visible)} goals"
                        if lvl else f"{d.isoformat()}: no data")
                 week.append({
                     "date": d.isoformat(), "level": lvl, "logged": lvl > 0,
@@ -139,8 +234,9 @@ def build_dashboard(user, year=None):
             prev = month
 
     heat_count = sum(1 for dt, l in by_date.items()
-                     if range_start <= dt <= range_end and level(l) > 0)
-    streak_current, streak_longest = _streaks(by_date, range_start, range_end, today)
+                     if range_start <= dt <= range_end and _level(l, visible) > 0)
+    streak_current, streak_longest = _streaks(by_date, range_start, range_end, today,
+                                              lambda l: _level(l, visible) > 0)
     days_in_range = (range_end - range_start).days + 1
     heat_options = [{"label": "Last 12 months", "year": None}] + [
         {"label": str(y), "year": y} for y in years]
@@ -150,7 +246,7 @@ def build_dashboard(user, year=None):
     today_log = by_date.get(today)
 
     habits = []
-    for h in HABITS:
+    for h in visible:
         days = []
         for wd in week_dates:
             if wd > today or wd not in by_date:
@@ -158,7 +254,7 @@ def build_dashboard(user, year=None):
             else:
                 days.append(is_met(h, by_date[wd]))   # True / False / None
         habits.append({
-            "key": h["key"], "name": h["name"], "color": h["color"],
+            "key": h["key"], "name": h["name"], "color": h["color"], "field": h["field"],
             "type": h.get("type", "number"),
             "days": days, "done": sum(1 for x in days if x),
             "value": getattr(today_log, h["field"], None) if today_log else None,
@@ -166,17 +262,17 @@ def build_dashboard(user, year=None):
 
     # Context inputs (no goal): today's value or None
     context = []
-    for c in CONTEXT:
+    for i, c in enumerate(visible_ctx):
         raw = getattr(today_log, c["field"], None) if today_log else None
         shown = None
         if raw is not None:
             shown = _choice_label(c, raw) or str(raw)
-        context.append({"key": c["key"], "name": c["name"],
-                        "color": c.get("color", "#6c757d"),
+        context.append({"key": c["key"], "name": c["name"], "field": c["field"],
+                        "color": c.get("color") or CONTEXT_COLORS[i % len(CONTEXT_COLORS)],
                         "value": raw, "shown": shown})
 
     elapsed = today.weekday() + 1
-    percent = round(sum(h["done"] for h in habits) / (len(HABITS) * elapsed) * 100)
+    percent = round(sum(h["done"] for h in habits) / (max(1, len(visible)) * elapsed) * 100)
 
     hour = datetime.now().hour
     greeting = "Good morning" if hour < 12 else "Good afternoon" if hour < 18 else "Good evening"
@@ -190,9 +286,9 @@ def build_dashboard(user, year=None):
         "context": context,
         "percent": percent,
         "today_index": today.weekday(),
-        "today_logged": today_log is not None and level(today_log) > 0,
+        "today_logged": today_log is not None and _level(today_log, visible) > 0,
         "total_logs": sum(1 for dt, l in by_date.items()
-                          if roll_start <= dt <= today and level(l) > 0),   # last 12 months
+                          if roll_start <= dt <= today and _level(l, visible) > 0),   # last 12 months
         "heat_year": year,
         "streak_current": streak_current,
         "streak_longest": streak_longest,
@@ -209,21 +305,37 @@ def build_dashboard(user, year=None):
 def index():
     data = None
     if current_user.is_authenticated:
+        if not prefs.is_onboarded(current_user.id):         # first visit: choose what to track
+            return redirect(url_for("main.setup"))
         data = build_dashboard(current_user, request.args.get("year", type=int))
         data["estimate"] = latest_estimate(current_user.id)
     return render_template("index.html", data=data)
 
 
+@main_bp.route("/setup", methods=["GET", "POST"])
+@login_required
+def setup():
+    """Choose which habits to track (first visit, and any time from the profile)."""
+    editing = prefs.is_onboarded(current_user.id)
+    if request.method == "POST":
+        chosen = set(request.form.getlist("track")) & set(_all_keys())
+        prefs.save_tracked(current_user.id, chosen | _core_keys())
+        flash("Saved. You can change what you track any time from your profile.", "success")
+        return redirect(url_for("main.index"))
+    current = prefs.tracked_keys(current_user.id, _all_keys(), _core_keys())
+    return render_template("setup.html", groups=_setup_cards(current), editing=editing)
+
+
 @main_bp.route("/dashboard")
 @login_required
 def dashboard():
-    return render_template("dashboard.html", stats=dashboard_stats(current_user))
+    return render_template("dashboard.html", stats=_filter_stats(dashboard_stats(current_user), current_user))
 
 
 @main_bp.route("/api/dashboard")
 @login_required
 def api_dashboard():
-    return jsonify(dashboard_stats(current_user))
+    return jsonify(_filter_stats(dashboard_stats(current_user), current_user))
 
 
 
@@ -312,6 +424,9 @@ def log_habit(key):
     habit = BY_KEY.get(key)
     if habit is None or habit.get("type") == "check":
         abort(404)
+    if habit["key"] not in tracking_for(current_user)[0]:
+        flash(f"You are not tracking {UI_TITLES.get(habit['field'], habit['name'])}. Turn it on first.", "info")
+        return redirect(url_for("main.setup"))
 
     choice = _is_choice(habit)
     form = ChoiceHabitForm() if choice else NumberHabitForm()
@@ -373,6 +488,9 @@ def toggle_habit(key):
     habit = BY_KEY.get(key)
     if habit is None or habit.get("type") != "check":
         abort(404)
+    if habit["key"] not in tracking_for(current_user)[0]:
+        flash(f"You are not tracking {UI_TITLES.get(habit['field'], habit['name'])}. Turn it on first.", "info")
+        return redirect(url_for("main.setup"))
 
     log = _get_log(current_user.id, date.today(), create=True)
     current = getattr(log, habit["field"])
@@ -587,7 +705,7 @@ def remove_avatar():
 @login_required
 def profile():
     try:
-        stats = dashboard_stats(current_user) or {}
+        stats = _filter_stats(dashboard_stats(current_user), current_user) or {}
     except Exception:                       # the profile must open even if stats break
         current_app.logger.exception("profile stats failed")
         stats = {}
@@ -607,5 +725,7 @@ def profile():
         first_log=first.log_date if first else None,
         member_since=getattr(current_user, "created_at", None),
         week_percent=build_dashboard(current_user)["percent"],
+        tracking=[c for _, _, cards in _setup_cards(tracking_for(current_user)[0]) for c in cards if c["on"]],
+        n_options=len(_all_keys()),
         estimate=latest_estimate(current_user.id),
     )

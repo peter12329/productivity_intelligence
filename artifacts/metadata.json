@@ -1,6 +1,6 @@
 {
-  "model_version": "20261017-171213",
-  "trained_at_utc": "2026-10-17T17:12:13.457729+00:00",
+  "model_version": "20261023-125037",
+  "trained_at_utc": "2026-10-23T12:50:37.080680+00:00",
   "sklearn_version": "1.9.1",
   "python_version": "3.13.15",
   "experimental": true,
@@ -48,6 +48,21 @@
       "rainy",
       "sunny"
     ]
+  },
+  "typical": {
+    "deep_work": 3.0,
+    "sleep_hours": 7.0,
+    "caffeine_level": 3.2,
+    "stress_level": 5,
+    "journaled": 1,
+    "log_streak": 6,
+    "disruptions": 1,
+    "junk_food": 0,
+    "task_difficulty": 3,
+    "deep_work_days_prev7": 3,
+    "free_hours": 6.3,
+    "day_type": "class",
+    "weather": "sunny"
   },
   "levels": [
     "low",
