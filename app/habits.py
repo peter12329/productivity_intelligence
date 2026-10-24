@@ -129,23 +129,6 @@ CONTEXT = [
 # Everything the /habit/<key> log page can open.
 BY_KEY = {h["key"]: h for h in HABITS + CONTEXT}
 
-# ML feature name (as in ml/dummydataset.py) -> log field in the database.
-# Features not listed here are computed: log_streak, deep_work_days_prev7.
-ML_FIELDS = {
-    "deep_work": "study_hours",
-    "sleep_hours": "sleep_hours",
-    "caffeine_level": "caffeine_mg",
-    "stress_level": "stress_level",
-    "journaled": "journaled",
-    "disruptions": "disruptions",
-    "junk_food": "junk_food",
-    "task_difficulty": "task_difficulty",
-    "free_hours": "free_hours",
-    "day_type": "day_type",
-    "weather": "weather",
-}
-
-
 # ------------------------------ goal logic ----------------------------------
 def is_met(habit, log):
     """True = goal met, False = logged but not met, None = no data."""
@@ -153,22 +136,9 @@ def is_met(habit, log):
     return None if value is None else bool(habit["met"](value))
 
 
-def goals_met(log):
-    return sum(1 for h in HABITS if is_met(h, log))
-
-
 def has_data(log):
     """True if at least one goal habit was logged on this day."""
     return log is not None and any(is_met(h, log) is not None for h in HABITS)
-
-
-def level(log):
-    """0 = no data, 1-4 = share of goals met (4 = full day)."""
-    states = [is_met(h, log) for h in HABITS]
-    if all(s is None for s in states):
-        return 0
-    frac = sum(1 for s in states if s) / len(HABITS)
-    return 4 if frac == 1 else 3 if frac >= 0.7 else 2 if frac >= 0.4 else 1
 
 
 # --------------------------- computed ML features ---------------------------

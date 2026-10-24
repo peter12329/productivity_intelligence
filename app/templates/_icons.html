@@ -6,5 +6,5 @@
   "study_hours": "target", "sleep_hours": "moon", "stress_level": "pulse", "caffeine_mg": "cup",
   "journaled": "notebook", "junk_food": "burger", "disruptions": "bell", "study_sessions": "layers",
   "free_hours": "clock", "task_difficulty": "mountain", "day_type": "calendar", "weather": "cloudsun"} %}
-<svg class="hicon" width="{{ size }}" height="{{ size }}" aria-hidden="true" focusable="false"><use href="{{ url_for('static', filename='img/habit-icons.svg') }}#{{ names.get(name, name if name in ['check', 'lock'] else 'dot') }}"/></svg>
+<svg class="hicon" width="{{ size }}" height="{{ size }}" aria-hidden="true" focusable="false"><use href="{{ url_for('static', filename='img/habit-icons.svg') }}#{{ names.get(name, name if name in ['check', 'lock', 'x', 'plus', 'trash', 'download'] else 'dot') }}"/></svg>
 {%- endmacro %}

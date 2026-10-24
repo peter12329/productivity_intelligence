@@ -24,7 +24,7 @@ HOW IT IS BUILT
     * ~0.5% of rows get extreme outliers; ~3% of values are blanked in four
       input columns to mimic missing data (train.py drops those rows).
 
-MODEL FEATURES (14 inputs, see ml/settings.py)
+MODEL FEATURES (13 inputs, see ml/settings.py)
     Numeric    : deep_work, sleep_hours, caffeine_level, stress_level,
                  journaled, log_streak, disruptions, junk_food,
                  task_difficulty, deep_work_days_prev7, free_hours

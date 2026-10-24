@@ -3,14 +3,23 @@
 Needs the dataset and trained models (python -m ml.dummydataset --rows 10000 && python -m ml.train).
 """
 import numpy as np
-import pandas as pd
 import pytest
 
 from ml.predict import data_stage, predict_day
 from ml.settings import CLASSIFICATION_TARGET, FEATURES, REGRESSION_TARGET
 from ml.train import GROUP_COL, load_data, split_data
 
-GOOD = {"study_hours": 4, "caffeine_mg": 3, "stress_level": 4, "study_sessions": 3, "journaled": 1}
+# One valid value for every name in ml/settings.py FEATURES.
+GOOD = {
+    "deep_work": 4, "sleep_hours": 7.5, "caffeine_level": 3, "stress_level": 4,
+    "journaled": 1, "log_streak": 3, "disruptions": 1, "junk_food": 0,
+    "task_difficulty": 3, "deep_work_days_prev7": 3, "day_type": "class",
+    "weather": "sunny", "free_hours": 6,
+}
+
+
+def test_good_input_covers_every_feature():
+    assert set(GOOD) == set(FEATURES)
 
 
 def test_targets_never_in_features():
@@ -39,22 +48,22 @@ def test_predict_output_shape_and_labels():
 
 
 @pytest.mark.parametrize("bad", [
-    {k: v for k, v in GOOD.items() if k != "study_hours"},
-    {**GOOD, "study_hours": "abc"},
+    {k: v for k, v in GOOD.items() if k != "deep_work"},
+    {**GOOD, "deep_work": "abc"},
     {**GOOD, "stress_level": 11},
-    {**GOOD, "caffeine_mg": -1},
-    {**GOOD, "study_hours": float("nan")},
+    {**GOOD, "caffeine_level": -1},
+    {**GOOD, "deep_work": float("nan")},
+    {**GOOD, "weather": "snowy"},
 ])
 def test_predict_rejects_bad_input(bad):
     with pytest.raises(ValueError):
         predict_day(bad)
 
 
-def test_more_study_never_gives_wildly_different_type():
-    # sanity: output stays finite across the valid grid corners
+def test_output_stays_finite_at_the_corners_of_the_valid_grid():
     for s in (0, 12):
         for st in (1, 10):
-            assert np.isfinite(predict_day({**GOOD, "study_hours": s, "stress_level": st})["predicted_score"])
+            assert np.isfinite(predict_day({**GOOD, "deep_work": s, "stress_level": st})["predicted_score"])
 
 
 def test_data_stage_does_not_claim_a_personal_model():

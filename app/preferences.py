@@ -5,7 +5,7 @@ migration step is needed. A user with no row has not done the setup yet
 (`is_onboarded` is False) and is treated as tracking everything until then.
 """
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 
 from app.extensions import db
 
@@ -19,7 +19,8 @@ class UserPreference(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, nullable=False, unique=True, index=True)
     tracked = db.Column(db.Text, nullable=False, default="[]")      # JSON list of habit keys
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc),
+                           onupdate=lambda: datetime.now(timezone.utc))
 
 
 _table_ready = False

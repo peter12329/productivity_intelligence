@@ -19,12 +19,19 @@ CLASSIFICATION_TARGET = "productivity_level"
 LEVELS = ["low", "medium", "high"]
 LEVEL_BINS = [-0.1, 45, 70, 100.1]
 
+# Allowed range of every numeric input (checked in ml/predict.py).
 FEATURE_RANGES = {
-    "study_hours": (0, 24),
-    "caffeine_mg": (0, 10),
+    "deep_work": (0, 24),
+    "sleep_hours": (0, 24),
+    "caffeine_level": (0, 10),
     "stress_level": (1, 10),
-    "study_sessions": (0, 50),
     "journaled": (0, 1),
+    "log_streak": (0, 14),
+    "disruptions": (0, 20),
+    "junk_food": (0, 1),
+    "task_difficulty": (1, 5),
+    "deep_work_days_prev7": (0, 7),
+    "free_hours": (0, 24),
 }
 
 N_CLUSTERS_RANGE = range(2, 8)

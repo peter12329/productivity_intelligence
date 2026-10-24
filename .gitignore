@@ -6,3 +6,5 @@ instance/
 *.db
 datasets/*.csv
 artifacts/*.joblib
+file_list.txt
+project_dump.txt

@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% from "_icons.html" import icon %}
+{% block title %}History - Hibi{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-end mb-3 gap-2">
+  <div>
+    <h1 class="h3 m-0">History</h1>
+    <p class="text-muted small m-0 mt-1">Tap any value to change it. Tap <span class="hx-inline">{{ icon('plus', 12) }}</span> to fill in a gap.</p>
+  </div>
+  <a class="btn btn-outline-secondary btn-sm d-inline-flex align-items-center gap-1" href="{{ url_for('main.export_csv') }}">
+    {{ icon('download', 16) }} Download CSV
+  </a>
+</div>
+
+{% if not rows %}
+  <div class="card"><div class="card-body text-center text-muted py-5">
+    No logs yet. Log a habit from the home page and it will show up here.
+  </div></div>
+{% else %}
+
+<div class="hx-legend small text-muted mb-2">
+  <span class="hx-chip hx-met">{{ icon('check', 12) }} goal met</span>
+  <span class="hx-chip hx-miss">{{ icon('x', 12) }} goal missed</span>
+  <span class="hx-chip hx-info">info only</span>
+</div>
+
+<div class="card hx-card">
+  <div class="table-responsive">
+    <table class="table hx-table align-middle mb-0">
+      <thead>
+        <tr>
+          <th class="hx-date-col">Date</th>
+          {% for col in columns %}
+          <th class="hx-col" title="{{ col.habit.name }}">
+            <span class="hx-icon" style="color: {{ col.color }}">{{ icon(col.field, 20) }}</span>
+            <span class="hx-label">{{ col.title }}</span>
+          </th>
+          {% endfor %}
+          <th class="hx-col">Goals</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        {% set day = r.log.log_date.isoformat() %}
+        <tr class="{{ 'hx-today' if r.is_today }}">
+          <td class="hx-date-col">
+            <span class="hx-dow">{{ r.log.log_date.strftime("%a") }}{% if r.is_today %} <span class="hx-badge">today</span>{% endif %}</span>
+            <span class="hx-day">{{ r.log.log_date.strftime("%b %d") }}{% if r.show_year %} <small class="text-muted">{{ r.log.log_date.year }}</small>{% endif %}</span>
+          </td>
+          {% for cell in r.cells %}
+          <td class="hx-cell">
+            {% if cell.habit.type == "check" %}
+              <form method="post" action="{{ url_for('main.toggle_habit', key=cell.habit.key) }}" class="m-0">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" name="date" value="{{ day }}">
+                <input type="hidden" name="next" value="history">
+                <button type="submit" class="hx-chip {{ 'hx-met' if cell.done else 'hx-none' }}"
+                        title="{{ cell.full }} - click to toggle">
+                  {% if cell.done %}{{ icon('check', 14) }}{% else %}{{ icon('plus', 12) }}{% endif %}
+                </button>
+              </form>
+            {% elif cell.empty %}
+              <a class="hx-chip hx-none" href="{{ url_for('main.log_habit', key=cell.habit.key, date=day) }}" title="Add a value">{{ icon('plus', 12) }}</a>
+            {% else %}
+              <a class="hx-chip {{ 'hx-met' if cell.state == true else 'hx-miss' if cell.state == false else 'hx-info' }}"
+                 href="{{ url_for('main.log_habit', key=cell.habit.key, date=day) }}" title="{{ cell.full }}">
+                {% if cell.state == true %}{{ icon('check', 12) }}{% elif cell.state == false %}{{ icon('x', 12) }}{% endif %}
+                {{ cell.short }}
+              </a>
+            {% endif %}
+          </td>
+          {% endfor %}
+          <td class="hx-cell">
+            <div class="hx-goals" title="{{ r.met }} of {{ n_goals }} goals met">
+              <span class="hx-bar"><span class="{{ 'hx-hi' if r.pct >= 70 else 'hx-mid' if r.pct >= 40 else 'hx-lo' }}" style="width: {{ r.pct }}%"></span></span>
+              <b>{{ r.met }}/{{ n_goals }}</b>
+            </div>
+          </td>
+          <td class="text-end">
+            <form method="post" action="{{ url_for('main.delete_log', log_id=r.log.id) }}" class="m-0"
+                  onsubmit="return confirm('Delete the log for {{ day }}? This cannot be undone.');">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button class="hx-del" type="submit" title="Delete this day" aria-label="Delete the log for {{ day }}">{{ icon('trash', 16) }}</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% if page.pages > 1 %}
+<nav class="d-flex justify-content-between align-items-center mt-3">
+  {% if page.has_prev %}<a class="btn btn-outline-secondary btn-sm" href="{{ url_for('main.history', page=page.prev_num) }}">&larr; Newer</a>{% else %}<span></span>{% endif %}
+  <span class="text-muted small">Page {{ page.page }} of {{ page.pages }}</span>
+  {% if page.has_next %}<a class="btn btn-outline-secondary btn-sm" href="{{ url_for('main.history', page=page.next_num) }}">Older &rarr;</a>{% else %}<span></span>{% endif %}
+</nav>
+{% endif %}
+{% endif %}
+{% endblock %}

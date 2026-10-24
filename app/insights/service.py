@@ -135,6 +135,8 @@ def fill_for_user(user_id):
     skipped = [f for f in FEATURES if f in DB_FIELDS
                and DB_FIELDS[f] not in CORE_FIELDS and DB_FIELDS[f] not in tracked_fields]
     typ = _typicals()
+    for f in CHECK_FEATURES:        # a skipped check habit counts as "not done"; the training
+        typ[f] = 0                  # median (1) would hand out the synthetic journaling bonus
     return {f: typ[f] for f in skipped if f in typ}
 
 

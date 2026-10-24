@@ -224,9 +224,10 @@ def regression_candidates(n_rows: int, num, cat) -> dict:
     if use_xgb(n_rows):
         candidates["xgboost"] = Pipeline([
             ("prep", make_prep(num, cat, scale=False)),
-            ("model", XGBRegressor(
-                n_estimators=400, learning_rate=0.05, max_depth=4,
-                subsample=0.9, random_state=RANDOM_STATE, n_jobs=-1))])
+            ("model", XGBRegressor(                                  
+                n_estimators=600, learning_rate=0.03, max_depth=3,
+                min_child_weight=5, subsample=0.8, colsample_bytree=0.8,
+                reg_lambda=3, random_state=RANDOM_STATE, n_jobs=-1))])
     return candidates
 
 

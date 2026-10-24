@@ -1,10 +1,13 @@
+import csv
+import json
 import math
 import os
 from datetime import date, datetime, timedelta
+from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 
-from flask import (Blueprint, abort, current_app, flash, jsonify, redirect,
+from flask import (Blueprint, Response, abort, current_app, flash, jsonify, redirect,
                    render_template, request, send_from_directory, url_for)
 from flask_login import current_user, login_required
 from sqlalchemy import extract
@@ -14,7 +17,7 @@ from wtforms.validators import InputRequired
 
 from app import preferences as prefs
 from app.extensions import db
-from app.habits import BY_KEY, CONTEXT, HABITS, goals_met, is_met, level
+from app.habits import BY_KEY, CONTEXT, HABITS, is_met
 from app.insights.service import latest_estimate
 from app.models import ProductivityLog
 from app.stats import dashboard_stats
@@ -115,24 +118,6 @@ def _level(log, visible):
     if not visible or not _is_logged(log, visible):
         return 0
     return max(1, min(4, math.ceil(4 * _met_count(log, visible) / len(visible))))
-
-
-def _filter_stats(stats, user):
-    """Hide untracked habits from the stats page / API (stats.py counts them all)."""
-    if not stats or stats.get("empty"):
-        return stats
-    keys, _, _ = tracking_for(user)
-    by_name = {h["name"]: h["key"] for h in HABITS}
-    fields = {BY_KEY[k]["field"] for k in keys if k in BY_KEY}
-    every_field = {b["field"] for b in list(HABITS) + list(CONTEXT)}
-    out = dict(stats)
-    if "habits" in out:
-        out["habits"] = [h for h in out["habits"]
-                         if by_name.get(h.get("name")) is None or by_name[h["name"]] in keys]
-    if "correlations" in out:
-        out["correlations"] = {f: r for f, r in out["correlations"].items()
-                               if f in fields or f not in every_field}
-    return out
 
 
 def _setup_cards(current):
@@ -301,6 +286,22 @@ def build_dashboard(user, year=None):
     }
 
 
+def _week_percent(user):
+    """This week's goals met, as a percent of (tracked habits x days so far).
+
+    Same number as build_dashboard()["percent"], without building the heatmap.
+    """
+    today = date.today()
+    monday = today - timedelta(days=today.weekday())
+    visible = tracking_for(user)[1]
+    logs = ProductivityLog.query.filter(
+        ProductivityLog.user_id == user.id,
+        ProductivityLog.log_date >= monday,
+        ProductivityLog.log_date <= today).all()
+    done = sum(1 for h in visible for l in logs if is_met(h, l) is True)
+    return round(done / (max(1, len(visible)) * (today.weekday() + 1)) * 100)
+
+
 @main_bp.route("/")
 def index():
     data = None
@@ -329,13 +330,13 @@ def setup():
 @main_bp.route("/dashboard")
 @login_required
 def dashboard():
-    return render_template("dashboard.html", stats=_filter_stats(dashboard_stats(current_user), current_user))
+    return render_template("dashboard.html", stats=dashboard_stats(current_user, tracking_for(current_user)[1]))
 
 
 @main_bp.route("/api/dashboard")
 @login_required
 def api_dashboard():
-    return jsonify(_filter_stats(dashboard_stats(current_user), current_user))
+    return jsonify(dashboard_stats(current_user, tracking_for(current_user)[1]))
 
 
 
@@ -492,12 +493,129 @@ def toggle_habit(key):
         flash(f"You are not tracking {UI_TITLES.get(habit['field'], habit['name'])}. Turn it on first.", "info")
         return redirect(url_for("main.setup"))
 
-    log = _get_log(current_user.id, date.today(), create=True)
+    day = date.today()
+    raw = request.form.get("date")
+    if raw:
+        try:
+            day = min(date.fromisoformat(raw), date.today())     # never the future
+        except ValueError:
+            day = date.today()
+    log = _get_log(current_user.id, day, create=True)
     current = getattr(log, habit["field"])
     setattr(log, habit["field"], None if current else True)
     db.session.commit()
+    if request.form.get("next") == "history":
+        return redirect(url_for("main.history"))
     return redirect(url_for("main.index"))
 
+
+
+# ------------------------------------------------------- history and export
+HISTORY_PER_PAGE = 30
+
+
+def _display(habit, value):
+    """Full text for one stored value (shown as the hover tooltip)."""
+    if value is None:
+        return "-"
+    if habit.get("type") == "check":
+        return "Done" if value else "Not done"
+    if _is_choice(habit):
+        return _choice_label(habit, value) or str(value)
+    return f"{value:g} {habit.get('unit', '')}".strip()
+
+
+SHORT_TEXT = {"class": "Class", "free": "Free", "deadline": "Deadline",
+              "sunny": "Sunny", "cloudy": "Cloudy", "rainy": "Rainy"}
+
+
+def _short(habit, value):
+    """Compact text for the history table cell."""
+    if habit.get("key") == "junk":
+        return "Yes" if value else "No"
+    if habit.get("key") == "difficulty":
+        return f"{value}/5"
+    if habit.get("key") == "stress":
+        return f"{value}/10"
+    if habit.get("type") == "check":
+        return ""                                   # shown as a tick
+    if _is_choice(habit) and str(value) in SHORT_TEXT:
+        return SHORT_TEXT[str(value)]
+    if habit.get("key") in ("study", "sleep", "free_hours"):
+        return f"{value:g}h"
+    return f"{value:g}"
+
+
+@main_bp.route("/history")
+@login_required
+def history():
+    """Every log, newest first. Cells are coloured by whether the goal was met."""
+    _, habits, context = tracking_for(current_user)
+    goal_keys = {h["key"] for h in habits}
+    columns = []
+    for i, c in enumerate(habits + context):
+        columns.append({
+            "habit": c, "field": c["field"], "key": c["key"],
+            "title": UI_TITLES.get(c["field"], c["name"]),
+            "color": c["color"] if c["key"] in goal_keys
+                     else CONTEXT_COLORS[i % len(CONTEXT_COLORS)],
+        })
+    page = ProductivityLog.query.filter_by(user_id=current_user.id).order_by(
+        ProductivityLog.log_date.desc()).paginate(
+        page=request.args.get("page", 1, type=int), per_page=HISTORY_PER_PAGE, error_out=False)
+    today = date.today()
+    rows = []
+    for log in page.items:
+        met = sum(1 for h in habits if is_met(h, log) is True)
+        cells = []
+        for col in columns:
+            h = col["habit"]
+            value = getattr(log, h["field"], None)
+            state = is_met(h, log) if h["key"] in goal_keys else None
+            cells.append({
+                "habit": h, "empty": value is None and h.get("type") != "check",
+                "state": state,                    # True met, False missed, None no goal
+                "short": "" if value is None else _short(h, value),
+                "full": _display(h, value),
+                "done": bool(value) if h.get("type") == "check" else None,
+            })
+        pct = round(met / len(habits) * 100) if habits else 0
+        rows.append({"log": log, "cells": cells, "met": met, "pct": pct,
+                     "is_today": log.log_date == today,
+                     "show_year": log.log_date.year != today.year})
+    return render_template("history.html", rows=rows, columns=columns, page=page,
+                           n_goals=len(habits))
+
+
+@main_bp.route("/history/<int:log_id>/delete", methods=["POST"])
+@login_required
+def delete_log(log_id):
+    log = ProductivityLog.query.filter_by(id=log_id, user_id=current_user.id).first_or_404()
+    day = log.log_date.isoformat()
+    db.session.delete(log)
+    db.session.commit()
+    flash(f"Deleted the log for {day}.", "info")
+    return redirect(url_for("main.history"))
+
+
+@main_bp.route("/export.csv")
+@login_required
+def export_csv():
+    """All of the current user's logs as CSV (their own rows only)."""
+    habits = HABITS + CONTEXT
+    out = StringIO()
+    writer = csv.writer(out)
+    writer.writerow(["date"] + [h["field"] for h in habits])
+    logs = ProductivityLog.query.filter_by(user_id=current_user.id).order_by(
+        ProductivityLog.log_date).all()
+    for log in logs:
+        row = [log.log_date.isoformat()]
+        for h in habits:
+            v = getattr(log, h["field"], None)
+            row.append("" if v is None else int(v) if isinstance(v, bool) else v)
+        writer.writerow(row)
+    return Response(out.getvalue(), mimetype="text/csv", headers={
+        "Content-Disposition": "attachment; filename=hibi-logs.csv"})
 
 
 # ------------------------------------------------------------- profile photo
@@ -509,9 +627,6 @@ def toggle_habit(key):
 # Uploads are never stored as sent: Pillow decodes them, which also strips
 # metadata and anything hidden in the file. The browser only sends the framing
 # numbers; the server does the cropping.
-import json
-import math
-
 AVATAR_MAX_BYTES = 3 * 1024 * 1024
 AVATAR_SIZE = 256
 AVATAR_SOURCE_MAX = 1280
@@ -675,8 +790,8 @@ def upload_avatar():
 @login_required
 def adjust_avatar():
     """Re-frame the photo already uploaded (no new upload needed)."""
-    from PIL import Image
     try:
+        from PIL import Image
         with Image.open(_avatar_file(current_user.id, "src")) as im:
             source = im.convert("RGB")
     except (OSError, ImportError):
@@ -705,7 +820,7 @@ def remove_avatar():
 @login_required
 def profile():
     try:
-        stats = _filter_stats(dashboard_stats(current_user), current_user) or {}
+        stats = dashboard_stats(current_user, tracking_for(current_user)[1]) or {}
     except Exception:                       # the profile must open even if stats break
         current_app.logger.exception("profile stats failed")
         stats = {}
@@ -724,7 +839,7 @@ def profile():
         total_logs=total,
         first_log=first.log_date if first else None,
         member_since=getattr(current_user, "created_at", None),
-        week_percent=build_dashboard(current_user)["percent"],
+        week_percent=_week_percent(current_user),
         tracking=[c for _, _, cards in _setup_cards(tracking_for(current_user)[0]) for c in cards if c["on"]],
         n_options=len(_all_keys()),
         estimate=latest_estimate(current_user.id),
