@@ -17,6 +17,8 @@ class User(UserMixin, db.Model):
         db.DateTime, default=lambda: datetime.now(timezone.utc), nullable=False
     )
 
+    theme = db.Column(db.String(30), nullable=False, default="midnight-purple")
+
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)
 

@@ -8,3 +8,8 @@ datasets/*.csv
 artifacts/*.joblib
 file_list.txt
 project_dump.txt
+# Local safety backups (do not commit)
+app/models.py.bak
+app/static/css/theme.css.bak
+app/templates/base.html.bak
+app/templates/profile.html.bak
