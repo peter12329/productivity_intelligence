@@ -52,34 +52,140 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script>
     const s = {{ stats | tojson }};
+
+    // Read the active Hibi theme colors.
+    const rootStyles = getComputedStyle(document.documentElement);
+    const activeTheme = document.documentElement.dataset.theme;
+
+    const darkTheme = [
+        "midnight-purple",
+        "dark-neon",
+        "dark"
+    ].includes(activeTheme);
+
+    const textColor = rootStyles.getPropertyValue("--hibi-ink").trim()
+        || (darkTheme ? "#edf0f7" : "#28392f");
+
+    const gridColor = darkTheme
+        ? "rgba(200, 210, 230, 0.16)"
+        : "rgba(70, 85, 105, 0.16)";
+
+    const accentColor = rootStyles.getPropertyValue("--hibi-orange").trim()
+        || "#f35d3a";
+
+    // Shared chart settings.
+    const sharedOptions = {
+        responsive: true,
+        maintainAspectRatio: true,
+        plugins: {
+            legend: {
+                labels: {
+                    color: textColor
+                }
+            }
+        },
+        scales: {
+            x: {
+                ticks: {
+                    color: textColor
+                },
+                grid: {
+                    color: gridColor
+                },
+                border: {
+                    color: gridColor
+                }
+            },
+            y: {
+                min: 0,
+                max: 100,
+                ticks: {
+                    color: textColor
+                },
+                grid: {
+                    color: gridColor
+                },
+                border: {
+                    color: gridColor
+                }
+            }
+        }
+    };
+
+    // Productivity trend.
     new Chart(document.getElementById("trend"), {
-      type: "line",
-      data: {
-        labels: s.trend.dates,
-        datasets: [
-          {label: "Daily", data: s.trend.score, borderColor: "#aaa", tension: .3},
-          {label: "7-day avg", data: s.trend.rolling, borderColor: "#f35d3a", tension: .3}
-        ]
-      },
-      options: {scales: {y: {min: 0, max: 100}}}
+        type: "line",
+        data: {
+            labels: s.trend.dates,
+            datasets: [
+                {
+                    label: "Daily",
+                    data: s.trend.score,
+                    borderColor: darkTheme ? "#c4b5fd" : "#64748b",
+                    backgroundColor: darkTheme
+                        ? "rgba(196, 181, 253, 0.12)"
+                        : "rgba(100, 116, 139, 0.10)",
+                    pointBackgroundColor: darkTheme ? "#c4b5fd" : "#64748b",
+                    tension: 0.3
+                },
+                {
+                    label: "7-day avg",
+                    data: s.trend.rolling,
+                    borderColor: accentColor,
+                    backgroundColor: accentColor,
+                    pointBackgroundColor: accentColor,
+                    tension: 0.3
+                }
+            ]
+        },
+        options: sharedOptions
     });
+
+    // Average by weekday.
     new Chart(document.getElementById("weekday"), {
-      type: "bar",
-      data: {
-        labels: Object.keys(s.weekday),
-        datasets: [{label: "Avg score", data: Object.values(s.weekday), backgroundColor: "#f35d3a"}]
-      },
-      options: {scales: {y: {min: 0, max: 100}}}
+        type: "bar",
+        data: {
+            labels: Object.keys(s.weekday),
+            datasets: [
+                {
+                    label: "Avg score",
+                    data: Object.values(s.weekday),
+                    backgroundColor: accentColor,
+                    borderColor: accentColor,
+                    borderWidth: 1
+                }
+            ]
+        },
+        options: sharedOptions
     });
-  </script>
-  {% endif %}
+</script>
+{% endif %}
 </div>
 
 <style>
   .cards {display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:12px; margin:16px 0}
-  .stat-card {padding:14px 16px; border-radius:14px; background:#fff; border:1px solid var(--hibi-line); box-shadow:0 1px 2px rgba(33,37,41,.04)}
-  .stat-card span {display:block; font-size:.8rem; color:#6c757d}
-  .stat-card b {font-size:1.5rem}
+  .stat-card {
+padding: 14px 16px;
+border-radius: 14px;
+background: var(--hibi-cream);
+color: var(--hibi-ink);
+border: 1px solid var(--hibi-line);
+box-shadow: 0 1px 2px rgba(33, 37, 41, 0.04);
+}
+
+.stat-card span {
+display: block;
+font-size: 0.8rem;
+color: var(--hibi-ink);
+opacity: 0.8;
+}
+
+.stat-card b {
+display: block;
+font-size: 1.5rem;
+color: var(--hibi-ink);
+}
+
   .habit-table {width:100%; border-collapse:collapse; margin:8px 0 20px}
   .habit-table th, .habit-table td {text-align:left; padding:6px 8px; border-bottom:1px solid rgba(127,127,127,.25)}
   .dot {display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:8px}

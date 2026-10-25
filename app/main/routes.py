@@ -22,6 +22,30 @@ from app.insights.service import latest_estimate
 from app.models import ProductivityLog
 from app.stats import dashboard_stats
 
+# ------------------------------------------------------------- user themes
+THEMES = {
+    "midnight-purple": {
+        "name": "Midnight Purple",
+        "description": "Deep navy backgrounds with violet accents.",
+    },
+    "sage-cream": {
+        "name": "Sage & Cream",
+        "description": "Muted greens and warm cream surfaces.",
+    },
+    "modern-blue": {
+        "name": "Modern Blue",
+        "description": "Clean surfaces with calm blue accents.",
+    },
+    "dark-neon": {
+        "name": "Dark Neon",
+        "description": "Charcoal surfaces with neon green accents.",
+    },
+    "warm-minimalist": {
+        "name": "Warm Minimalist",
+        "description": "Soft beige surfaces and terracotta accents.",
+    },
+}
+
 main_bp = Blueprint("main", __name__)
 
 # ---------------------------------------------------------------- log forms
@@ -816,6 +840,22 @@ def remove_avatar():
         flash("Profile photo removed.", "info")
     return redirect(url_for("main.profile"))
 
+@main_bp.route("/profile/theme", methods=["POST"])
+@login_required
+def update_theme():
+    selected_theme = request.form.get("theme", "").strip()
+
+    if selected_theme not in THEMES:
+        flash("Please select a valid theme.", "danger")
+        return redirect(url_for("main.profile"))
+
+    current_user.theme = selected_theme
+    db.session.commit()
+
+    flash(f"Theme updated to {THEMES[selected_theme]['name']}!", "success")
+    return redirect(url_for("main.profile"))
+
+
 @main_bp.route("/profile")
 @login_required
 def profile():
@@ -843,4 +883,6 @@ def profile():
         tracking=[c for _, _, cards in _setup_cards(tracking_for(current_user)[0]) for c in cards if c["on"]],
         n_options=len(_all_keys()),
         estimate=latest_estimate(current_user.id),
+        themes=THEMES,
+        current_theme=current_user.theme or "midnight-purple",
     )

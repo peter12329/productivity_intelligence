@@ -22,3 +22,101 @@
 .habit-cell.nodata { background: transparent; border: 2px dashed #d0d7e5; }
 .cell.today-empty { background: #ffc107; }
 .cell.is-today { outline: 1px solid #0d6efd; outline-offset: 1px; }
+
+/* Logout button: fixed box, theme-adaptive icon */
+.logout-form {
+display: inline-flex;
+align-items: center;
+}
+
+.logout-icon-btn {
+display: inline-flex;
+align-items: center;
+justify-content: center;
+width: 39px;
+height: 39px;
+padding: 0;
+border: 1px solid #8b918d;
+border-radius: 10px;
+background: transparent;
+color: var(--hibi-ink, #edf0f7);
+cursor: pointer;
+transition: color 0.2s ease, transform 0.2s ease;
+}
+
+.logout-icon-btn:hover {
+background: transparent;
+border-color: #8b918d;
+color: var(--hibi-orange-700, #ff927b);
+}
+
+.logout-icon-btn:focus-visible {
+outline: 2px solid currentColor;
+outline-offset: 3px;
+}
+
+.logout-icon-btn:active {
+transform: scale(0.96);
+}
+
+.logout-icon-btn svg {
+display: block;
+flex-shrink: 0;
+width: 24px;
+height: 24px;
+opacity: 1;
+stroke-width: 2.2;
+}
+
+@media (prefers-reduced-motion: reduce) {
+.logout-icon-btn {
+transition: none;
+}
+}
+
+/* Logout icon contrast for each Hibi theme */
+html[data-theme="midnight-purple"] .logout-icon-btn {
+color: #c4b5fd;
+}
+
+html[data-theme="sage-cream"] .logout-icon-btn {
+color: #426b50;
+}
+
+html[data-theme="modern-blue"] .logout-icon-btn {
+color: #3674c8;
+}
+
+html[data-theme="dark-neon"] .logout-icon-btn {
+color: #7dff7a;
+}
+
+html[data-theme="warm-minimalist"] .logout-icon-btn {
+color: #b85f43;
+}
+
+/* Keep the box unchanged on hover; brighten only the icon */
+.logout-icon-btn:hover {
+background: transparent;
+border-color: #8b918d;
+}
+
+html[data-theme="midnight-purple"] .logout-icon-btn:hover {
+color: #e0d7ff;
+}
+
+html[data-theme="sage-cream"] .logout-icon-btn:hover {
+color: #294a34;
+}
+
+html[data-theme="modern-blue"] .logout-icon-btn:hover {
+color: #2056a0;
+}
+
+html[data-theme="dark-neon"] .logout-icon-btn:hover {
+color: #b0ffad;
+}
+
+html[data-theme="warm-minimalist"] .logout-icon-btn:hover {
+color: #91432d;
+}
