@@ -52,5 +52,7 @@ python -m pytest tests -q        # tests/test_ml.py needs the dataset and traine
 | `app/insights/` | the ML estimate pages and the helper used by the home card |
 | `ml/` | synthetic data, training, evaluation, prediction |
 
-Your data export is at `/export.csv` (logged in), and every log can be edited or
-deleted from `/history`.
+Your data export is at `/export.csv` (logged in), a CSV in that format can be brought back
+in at `/import` (checked first; any error imports nothing), and every log can be edited or
+deleted from `/history`. Click a heatmap cell to open that day, where you can also keep an
+optional note. The heatmap's habit dropdown shows one goal at a time.

@@ -11,15 +11,21 @@ from flask import (Blueprint, Response, abort, current_app, flash, jsonify, redi
                    render_template, request, send_from_directory, url_for)
 from flask_login import current_user, login_required
 from sqlalchemy import extract
+from sqlalchemy.exc import SQLAlchemyError
 from flask_wtf import FlaskForm
 from wtforms import DateField, FloatField, SelectField, SubmitField
 from wtforms.validators import InputRequired
 
 from app import preferences as prefs
+from app.csv_import import FIELDS as IMPORT_FIELDS
+from app.csv_import import MAX_BYTES as IMPORT_MAX_BYTES
+from app.csv_import import MAX_ROWS as IMPORT_MAX_ROWS
+from app.csv_import import parse_csv
 from app.extensions import db
 from app.habits import BY_KEY, CONTEXT, HABITS, is_met
 from app.insights.service import latest_estimate
 from app.models import ProductivityLog
+from app.notes import NOTE_MAX, delete_note, get_note, notes_for, save_note
 from app.stats import dashboard_stats
 
 main_bp = Blueprint("main", __name__)
@@ -168,11 +174,13 @@ def _streaks(by_date, range_start, range_end, today, is_logged):
     return current, best
 
 
-def build_dashboard(user, year=None):
+def build_dashboard(user, year=None, focus=None):
     """Data for the home page. `year` picks a calendar year for the heatmap;
-    None means the rolling last 12 months (the past 52 weeks)."""
+    None means the rolling last 12 months (the past 52 weeks). `focus` is the key
+    of one tracked goal habit: the heatmap then shows only that habit (met / not met)."""
     today = date.today()
     tracked, visible, visible_ctx = tracking_for(user)
+    focus_habit = next((h for h in visible if h["key"] == focus), None)     # unknown key = all goals
     years = heatmap_years(user)
     if year not in years:                         # None or a year with no logs
         year = None
@@ -200,9 +208,16 @@ def build_dashboard(user, year=None):
                 week.append(None)                 # outside the chosen period
             else:
                 log = by_date.get(d)
-                lvl = _level(log, visible) if log else 0
-                tip = (f"{d.isoformat()}: {_met_count(log, visible)}/{len(visible)} goals"
-                       if lvl else f"{d.isoformat()}: no data")
+                if focus_habit:
+                    state = is_met(focus_habit, log) if log else None       # True / False / None
+                    lvl = 0 if state is None else (4 if state else 1)
+                    tip = (f"{d.isoformat()}: {focus_habit['name']} - "
+                           f"{'goal met' if state else 'not met'} ({_display(focus_habit, getattr(log, focus_habit['field']))})"
+                           if state is not None else f"{d.isoformat()}: no data for this habit")
+                else:
+                    lvl = _level(log, visible) if log else 0
+                    tip = (f"{d.isoformat()}: {_met_count(log, visible)}/{len(visible)} goals"
+                           if lvl else f"{d.isoformat()}: no data")
                 week.append({
                     "date": d.isoformat(), "level": lvl, "logged": lvl > 0,
                     "today": d == today, "tip": tip,
@@ -218,10 +233,12 @@ def build_dashboard(user, year=None):
         if month:
             prev = month
 
-    heat_count = sum(1 for dt, l in by_date.items()
-                     if range_start <= dt <= range_end and _level(l, visible) > 0)
-    streak_current, streak_longest = _streaks(by_date, range_start, range_end, today,
-                                              lambda l: _level(l, visible) > 0)
+    if focus_habit:                       # a day counts when THIS goal was met
+        counts = lambda l: is_met(focus_habit, l) is True
+    else:                                 # a day counts when anything you track was logged
+        counts = lambda l: _level(l, visible) > 0
+    heat_count = sum(1 for dt, l in by_date.items() if range_start <= dt <= range_end and counts(l))
+    streak_current, streak_longest = _streaks(by_date, range_start, range_end, today, counts)
     days_in_range = (range_end - range_start).days + 1
     heat_options = [{"label": "Last 12 months", "year": None}] + [
         {"label": str(y), "year": y} for y in years]
@@ -283,6 +300,9 @@ def build_dashboard(user, year=None):
         "heat_options": heat_options,
         "show_year_picker": any(y < today.year for y in years),     # only once there is an earlier year
         "heat_scroll_end": year is None or year == today.year,
+        "focus": focus_habit["key"] if focus_habit else None,
+        "focus_options": [{"key": h["key"], "title": UI_TITLES.get(h["field"], h["name"])}
+                          for h in visible],
     }
 
 
@@ -308,9 +328,19 @@ def index():
     if current_user.is_authenticated:
         if not prefs.is_onboarded(current_user.id):         # first visit: choose what to track
             return redirect(url_for("main.setup"))
-        data = build_dashboard(current_user, request.args.get("year", type=int))
+        data = build_dashboard(current_user, request.args.get("year", type=int),
+                               request.args.get("habit"))
         data["estimate"] = latest_estimate(current_user.id)
     return render_template("index.html", data=data)
+
+
+@main_bp.route("/heatmap")
+@login_required
+def heatmap_partial():
+    """Only the heatmap card, for the in-page habit / year switcher (no full reload)."""
+    data = build_dashboard(current_user, request.args.get("year", type=int),
+                           request.args.get("habit"))
+    return render_template("_heatmap.html", data=data)
 
 
 @main_bp.route("/setup", methods=["GET", "POST"])
@@ -477,6 +507,11 @@ def log_habit(key):
                     flash(f"{habit['name']}: "
                           f"{'goal met' if met else 'goal not met'} ({shown}).",
                           "success" if met else "info")
+                back = request.args.get("back")
+                if back == "day":
+                    return redirect(url_for("main.day", iso=form.log_date.data.isoformat()))
+                if back == "history":
+                    return redirect(url_for("main.history"))
                 return redirect(url_for("main.index"))
 
     ctx = _log_page_context(habit, choice, chosen, existing_value)
@@ -506,6 +541,8 @@ def toggle_habit(key):
     db.session.commit()
     if request.form.get("next") == "history":
         return redirect(url_for("main.history"))
+    if request.form.get("next") == "day":
+        return redirect(url_for("main.day", iso=day.isoformat()))
     return redirect(url_for("main.index"))
 
 
@@ -546,6 +583,19 @@ def _short(habit, value):
     return f"{value:g}"
 
 
+def _cell_data(habit, log, is_goal):
+    """Everything a template needs to show one habit on one day."""
+    value = getattr(log, habit["field"], None) if log else None
+    check = habit.get("type") == "check"
+    return {
+        "habit": habit, "empty": value is None and not check,
+        "state": is_met(habit, log) if (is_goal and log) else None,   # True met / False missed / None
+        "short": "" if value is None else _short(habit, value),
+        "full": _display(habit, value),
+        "done": bool(value) if check else None,
+    }
+
+
 @main_bp.route("/history")
 @login_required
 def history():
@@ -564,27 +614,70 @@ def history():
         ProductivityLog.log_date.desc()).paginate(
         page=request.args.get("page", 1, type=int), per_page=HISTORY_PER_PAGE, error_out=False)
     today = date.today()
+    notes = notes_for(current_user.id, [l.log_date for l in page.items])
     rows = []
     for log in page.items:
         met = sum(1 for h in habits if is_met(h, log) is True)
-        cells = []
-        for col in columns:
-            h = col["habit"]
-            value = getattr(log, h["field"], None)
-            state = is_met(h, log) if h["key"] in goal_keys else None
-            cells.append({
-                "habit": h, "empty": value is None and h.get("type") != "check",
-                "state": state,                    # True met, False missed, None no goal
-                "short": "" if value is None else _short(h, value),
-                "full": _display(h, value),
-                "done": bool(value) if h.get("type") == "check" else None,
-            })
+        cells = [_cell_data(col["habit"], log, col["key"] in goal_keys) for col in columns]
         pct = round(met / len(habits) * 100) if habits else 0
         rows.append({"log": log, "cells": cells, "met": met, "pct": pct,
+                     "note": notes.get(log.log_date),
                      "is_today": log.log_date == today,
                      "show_year": log.log_date.year != today.year})
     return render_template("history.html", rows=rows, columns=columns, page=page,
                            n_goals=len(habits))
+
+
+LEVEL_TEXT = {0: "Nothing logged", 1: "A start", 2: "Getting there", 3: "Strong day", 4: "Full day"}
+
+
+@main_bp.route("/day/<iso>")
+@login_required
+def day(iso):
+    """One day in detail: every habit's value, goal state and a link to edit it."""
+    try:
+        d = date.fromisoformat(iso)
+    except ValueError:
+        abort(404)
+    today = date.today()
+    if d > today:                                   # nothing to show in the future
+        return redirect(url_for("main.day", iso=today.isoformat()))
+
+    _, habits, context = tracking_for(current_user)
+    log = _get_log(current_user.id, d)
+    goals = [dict(_cell_data(h, log, True), title=UI_TITLES.get(h["field"], h["name"])) for h in habits]
+    extras = [dict(_cell_data(c, log, False), title=UI_TITLES.get(c["field"], c["name"]),
+                   color=CONTEXT_COLORS[i % len(CONTEXT_COLORS)])
+              for i, c in enumerate(context)]
+    met = sum(1 for g in goals if g["state"] is True)
+    lvl = _level(log, habits) if log else 0
+    return render_template(
+        "day.html", d=d, log=log, goals=goals, extras=extras, met=met, n_goals=len(habits),
+        pct=round(met / len(habits) * 100) if habits else 0,
+        level=lvl, level_text=LEVEL_TEXT[lvl],
+        is_today=d == today,
+        note=get_note(current_user.id, d), note_max=NOTE_MAX,
+        prev_iso=(d - timedelta(days=1)).isoformat(),
+        next_iso=(d + timedelta(days=1)).isoformat() if d < today else None,
+        iso=d.isoformat())
+
+
+@main_bp.route("/day/<iso>/note", methods=["POST"])
+@login_required
+def save_day_note(iso):
+    """Save, replace or clear the optional note for one day (empty text clears it)."""
+    try:
+        d = date.fromisoformat(iso)
+    except ValueError:
+        abort(404)
+    if d > date.today():
+        abort(404)
+    try:
+        result = save_note(current_user.id, d, request.form.get("note", ""))
+        flash("Note saved." if result == "saved" else "Note removed.", "success")
+    except ValueError as exc:
+        flash(str(exc), "danger")
+    return redirect(url_for("main.day", iso=d.isoformat()))
 
 
 @main_bp.route("/history/<int:log_id>/delete", methods=["POST"])
@@ -592,6 +685,7 @@ def history():
 def delete_log(log_id):
     log = ProductivityLog.query.filter_by(id=log_id, user_id=current_user.id).first_or_404()
     day = log.log_date.isoformat()
+    delete_note(current_user.id, log.log_date)          # the day's note goes with it
     db.session.delete(log)
     db.session.commit()
     flash(f"Deleted the log for {day}.", "info")
@@ -616,6 +710,100 @@ def export_csv():
         writer.writerow(row)
     return Response(out.getvalue(), mimetype="text/csv", headers={
         "Content-Disposition": "attachment; filename=hibi-logs.csv"})
+
+
+# ------------------------------------------------------------------ import
+def _rule_text(h):
+    """Allowed values of one column, built from the habit definition."""
+    if h.get("type") == "check":
+        return "1 or 0 (true / false)"
+    if h.get("type") == "choice":
+        return ", ".join(str(value) for value, _ in h["choices"])
+    kind = "whole numbers" if h["cast"] is int else "numbers"
+    return f"{h['min']:g} to {h['max']:g} ({kind})"
+
+
+def _plan_import(user_id, rows, overwrite):
+    """Work out what an import would change, without touching the database.
+
+    New days are created. For an existing day, empty values are filled in; a
+    value that is already there is only replaced when `overwrite` is on.
+    """
+    existing = {}
+    if rows:
+        for log in ProductivityLog.query.filter(
+                ProductivityLog.user_id == user_id,
+                ProductivityLog.log_date >= min(rows),
+                ProductivityLog.log_date <= max(rows)):
+            existing[log.log_date] = log
+    plan = {"new": 0, "updated": 0, "unchanged": 0, "values_set": 0,
+            "values_kept": 0, "changes": []}
+    for day, values in sorted(rows.items()):
+        log = existing.get(day)
+        if log is None:
+            plan["new"] += 1
+            plan["values_set"] += len(values)
+            plan["changes"].append((day, None, values))
+            continue
+        changes = {}
+        for name, value in values.items():
+            current = getattr(log, name)
+            if current is None or (overwrite and current != value):
+                changes[name] = value
+            elif current != value:
+                plan["values_kept"] += 1            # kept your existing value
+        if changes:
+            plan["updated"] += 1
+            plan["values_set"] += len(changes)
+            plan["changes"].append((day, log, changes))
+        else:
+            plan["unchanged"] += 1
+    return plan
+
+
+@main_bp.route("/import", methods=["GET", "POST"])
+@login_required
+def import_csv():
+    """Upload a CSV in the export format. All or nothing: any error imports nothing."""
+    outcome = None
+    if request.method == "POST":
+        upload = request.files.get("file")
+        overwrite = request.form.get("mode") == "overwrite"
+        dry_run = request.form.get("dry_run") == "1"
+        if not upload or not upload.filename:
+            outcome = {"ok": False, "errors": ["Choose a CSV file first."], "error_total": 1}
+        else:
+            parsed = parse_csv(upload.stream.read(IMPORT_MAX_BYTES + 1))
+            if parsed.error_total:
+                outcome = {"ok": False, "errors": parsed.errors, "error_total": parsed.error_total}
+            else:
+                plan = _plan_import(current_user.id, parsed.rows, overwrite)
+                saved = False
+                if not dry_run:
+                    try:
+                        for day, log, changes in plan["changes"]:
+                            if log is None:
+                                db.session.add(ProductivityLog(
+                                    user_id=current_user.id, log_date=day, **changes))
+                            else:
+                                for name, value in changes.items():
+                                    setattr(log, name, value)
+                        db.session.commit()
+                        saved = True
+                    except SQLAlchemyError:
+                        db.session.rollback()
+                        plan = None
+                if plan is None:
+                    outcome = {"ok": False, "error_total": 1, "errors": [
+                        "The database refused the import, so nothing was saved. Try again."]}
+                else:
+                    outcome = {"ok": True, "saved": saved, "dry_run": dry_run,
+                               "overwrite": overwrite, "blank": parsed.blank_rows,
+                               **{k: v for k, v in plan.items() if k != "changes"}}
+    columns = [{"field": f, "name": h.get("label") or h["name"], "rule": _rule_text(h)}
+               for f, h in IMPORT_FIELDS.items()]
+    return render_template("import.html", outcome=outcome, columns=columns,
+                           max_rows=IMPORT_MAX_ROWS, max_mb=IMPORT_MAX_BYTES // 1_000_000)
 
 
 # ------------------------------------------------------------- profile photo

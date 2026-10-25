@@ -62,7 +62,7 @@ from ml.settings import DATASET_PATH, LEVEL_BINS, LEVELS
 # ----------------------------- defaults ------------------------------------
 DEFAULT_SEED = 42
 DEFAULT_ROWS = 2_000
-N_PEOPLE = 20
+N_PEOPLE = 60
 DEFAULT_THRESHOLD = 60.0   # productive_day = score >= this
 MISSING_RATE = 0.03        # per selected column
 OUTLIER_RATE = 0.005       # per row

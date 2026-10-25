@@ -43,76 +43,8 @@
       </tbody>
     </table>
 
-    <!-- HEATMAP CARD: last 12 months by default; a picker appears once there are earlier years -->
-    <div class="card heat-card mb-3">
-      <div class="card-body">
-      <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2" id="heatmap-section">
-        <div class="d-flex align-items-baseline gap-2">
-          <h2 class="h6 mb-0">{{ data.heat_title }}</h2>
-          <span class="small text-muted">{{ data.heat_count }} day{{ "s" if data.heat_count != 1 }} logged</span>
-        </div>
-        <div class="d-flex align-items-center gap-2">
-          {% if data.show_year_picker %}
-          <select class="form-select form-select-sm w-auto" aria-label="Heatmap period"
-                  onchange="location.href = this.value + '#heatmap-section'">
-            {% for o in data.heat_options %}
-            <option value="{{ url_for('main.index', year=o.year) if o.year else url_for('main.index') }}" {% if o.year == data.heat_year %}selected{% endif %}>{{ o.label }}</option>
-            {% endfor %}
-          </select>
-          {% endif %}
-          {% if not data.heat_year %}<button type="button" id="heatmap-toggle" class="btn btn-link btn-sm p-0">Show full 12 months</button>{% endif %}
-        </div>
-      </div>
-
-      <div class="heatmap{% if data.heat_year %} expanded{% endif %}" id="heatmap" data-scroll="{{ 'end' if data.heat_scroll_end else 'start' }}">
-        {% for week in data.weeks %}
-          <div class="heatmap-col{% if not data.heat_year and loop.revindex > 8 %} old-week{% endif %}">
-            <div class="month-label">{{ data.month_labels[loop.index0] }}</div>
-            <div class="heatmap-week">
-              {% for c in week %}
-                {% if c %}
-                  <div class="cell l{{ c.level }}{% if c.today and not c.logged %} today-empty{% endif %}{% if c.today %} is-today{% endif %}" title="{{ c.tip }}"></div>
-                {% else %}
-                  <div class="cell empty"></div>
-                {% endif %}
-              {% endfor %}
-            </div>
-          </div>
-        {% endfor %}
-      </div>
-
-      <div class="legend small text-muted mt-2">
-        <span class="cell l0"></span> No data
-        <span class="cell today-empty ms-2"></span> Today, not logged
-        <span class="ms-3">Less</span>
-        <span class="cell l1"></span><span class="cell l2"></span><span class="cell l3"></span><span class="cell l4"></span>
-        <span>Full day</span>
-      </div>
-
-        <div class="heat-stats">
-          <div class="heat-stat">
-            <img class="heat-stat-icon" src="{{ url_for('static', filename='img/hibi-icon.svg') }}" alt="">
-            <div>
-              <div class="heat-stat-value">{{ data.streak_current }}<span> day{{ "s" if data.streak_current != 1 }}</span></div>
-              <div class="heat-stat-label">Current streak</div>
-            </div>
-          </div>
-          <div class="heat-stat">
-            <span class="heat-stat-badge"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M12 2l2.9 6.3 6.9.7-5.2 4.6 1.5 6.8L12 17l-6.1 3.4 1.5-6.8L2.2 9l6.9-.7z"/></svg></span>
-            <div>
-              <div class="heat-stat-value">{{ data.streak_longest }}<span> day{{ "s" if data.streak_longest != 1 }}</span></div>
-              <div class="heat-stat-label">Longest streak{% if data.heat_year %} in {{ data.heat_year }}{% endif %}</div>
-            </div>
-          </div>
-          <div class="heat-stat">
-            <span class="heat-stat-badge"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4M9 15l2 2 4-4"/></svg></span>
-            <div>
-              <div class="heat-stat-value">{{ data.heat_pct }}<span>% of days</span></div>
-              <div class="heat-stat-label">Logged</div>
-            </div>
-          </div>
-        </div>
-      </div>
+    <div id="heat-wrap" data-url="{{ url_for('main.heatmap_partial') }}">
+      {% include "_heatmap.html" %}
     </div>
 
     <!-- ML estimate (experimental): data.estimate is set by the main route; hidden if absent -->
@@ -258,6 +190,7 @@
   /* collapsed: hide all but the last 8 weeks */
   .heatmap:not(.expanded) .old-week { display: none; }
   .heatmap { overflow-x: auto; }
+  #heat-wrap.is-loading { opacity: .55; transition: opacity .15s; }
   #estimate-card { scroll-margin-top: 1rem; transition: box-shadow .3s; }
   #estimate-card.flash { box-shadow: 0 0 0 .25rem rgba(13, 110, 253, .35); }
 
@@ -274,25 +207,74 @@
 
 <script>
   (function () {
-    var btn = document.getElementById("heatmap-toggle");
-    var map = document.getElementById("heatmap");
-    if (!map) return;
+    var wrap = document.getElementById("heat-wrap");
+    if (!wrap) return;
+    var latest = 0;
 
-    // newest weeks are on the right: show them (a past year starts at January)
-    function scrollToLatest() {
-      map.scrollLeft = map.dataset.scroll === "end" ? map.scrollWidth : 0;
+    // (re)attach the toggle button and scroll to the newest weeks
+    function init(keepExpanded) {
+      var map = document.getElementById("heatmap");
+      if (!map) return;
+      var btn = document.getElementById("heatmap-toggle");
+      function scrollToLatest() {
+        map.scrollLeft = map.dataset.scroll === "end" ? map.scrollWidth : 0;
+      }
+      if (btn) {
+        btn.addEventListener("click", function () {
+          var open = map.classList.toggle("expanded");
+          btn.textContent = open ? "Show less" : "Show full 12 months";
+          scrollToLatest();
+        });
+        if (keepExpanded) {                      // stay open if the user had opened it
+          map.classList.add("expanded");
+          btn.textContent = "Show less";
+        }
+      }
+      scrollToLatest();
     }
+    init(false);
+    window.addEventListener("load", function () {
+      var map = document.getElementById("heatmap");
+      if (map) map.scrollLeft = map.dataset.scroll === "end" ? map.scrollWidth : 0;
+    });
 
-    if (btn) {
-      btn.addEventListener("click", function () {
-        var open = map.classList.toggle("expanded");
-        btn.textContent = open ? "Show less" : "Show full 12 months";
-        scrollToLatest();
-      });
-    }
+    // Change the habit or period: fetch only the heatmap card and swap it in (no page reload).
+    wrap.addEventListener("change", function (e) {
+      var form = e.target.closest("[data-heat-form]");
+      if (!form) return;
+      if (!window.fetch) { form.submit(); return; }
 
-    scrollToLatest();
-    window.addEventListener("load", scrollToLatest);
+      var params = new URLSearchParams();
+      new FormData(form).forEach(function (value, key) { if (value) params.append(key, value); });
+      var qs = params.toString() ? "?" + params.toString() : "";
+      var mine = ++latest;
+      var wasExpanded = !!document.querySelector("#heatmap.expanded");
+      var changed = e.target.name;
+
+      wrap.style.minHeight = wrap.offsetHeight + "px";      // keep the page from jumping
+      wrap.classList.add("is-loading");
+      wrap.setAttribute("aria-busy", "true");
+
+      fetch(wrap.dataset.url + qs, { credentials: "same-origin", headers: { "X-Requested-With": "fetch" } })
+        .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.text(); })
+        .then(function (html) {
+          if (mine !== latest) return;                      // a newer choice already won
+          wrap.innerHTML = html;
+          history.replaceState(null, "", location.pathname + qs);   // refresh and sharing keep the choice
+          init(wasExpanded);
+          var again = wrap.querySelector('[name="' + changed + '"]');
+          if (again) again.focus();
+        })
+        .catch(function () {                                // anything went wrong: do a normal page load
+          if (mine === latest) location.href = location.pathname + qs + "#heatmap-section";
+        })
+        .then(function () {
+          if (mine !== latest) return;
+          wrap.classList.remove("is-loading");
+          wrap.removeAttribute("aria-busy");
+          wrap.style.minHeight = "";
+        });
+    });
   })();
 
   (function () {

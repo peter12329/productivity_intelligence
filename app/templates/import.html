@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% from "_icons.html" import icon %}
+{% block title %}Import CSV - Hibi{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-9">
+    <h1 class="h3 mb-1">Import CSV</h1>
+    <p class="text-muted">Bring in logs from a file in the same format as <a href="{{ url_for('main.export_csv') }}">Download CSV</a>.
+      The file is checked first. <strong>If anything is wrong, nothing is imported.</strong></p>
+
+    {% if outcome %}
+      {% if outcome.ok %}
+        <div class="alert {{ 'alert-success' if outcome.saved else 'alert-info' }}" role="status">
+          {% if outcome.saved %}
+            <strong>Imported.</strong>
+          {% else %}
+            <strong>Check passed. Nothing was saved yet.</strong> Run it again without "Check only" to import.
+          {% endif %}
+          <ul class="mb-0 mt-2">
+            <li>{{ outcome.new }} new day{{ "s" if outcome.new != 1 }}{{ " would be" if outcome.dry_run }} added</li>
+            <li>{{ outcome.updated }} existing day{{ "s" if outcome.updated != 1 }}{{ " would be" if outcome.dry_run }} updated ({{ outcome["values_set"] }} value{{ "s" if outcome["values_set"] != 1 }} written in total)</li>
+            {% if outcome.unchanged %}<li>{{ outcome.unchanged }} day{{ "s" if outcome.unchanged != 1 }} already matched</li>{% endif %}
+            {% if outcome["values_kept"] %}<li>{{ outcome["values_kept"] }} value{{ "s" if outcome["values_kept"] != 1 }} kept as they were (you chose not to overwrite)</li>{% endif %}
+            {% if outcome.blank %}<li>{{ outcome.blank }} row{{ "s" if outcome.blank != 1 }} had a date but no values and {{ "were" if outcome.blank != 1 else "was" }} skipped</li>{% endif %}
+          </ul>
+          {% if outcome.saved %}<div class="mt-2"><a href="{{ url_for('main.history') }}">See it in History</a></div>{% endif %}
+        </div>
+      {% else %}
+        <div class="alert alert-danger" role="alert">
+          <strong>Nothing was imported.</strong> Fix {{ outcome.error_total }} problem{{ "s" if outcome.error_total != 1 }} and upload again.
+          <ul class="mb-0 mt-2">
+            {% for e in outcome.errors %}<li>{{ e }}</li>{% endfor %}
+          </ul>
+          {% if outcome.error_total > outcome.errors|length %}
+            <div class="small mt-2">Showing the first {{ outcome.errors|length }} of {{ outcome.error_total }}.</div>
+          {% endif %}
+        </div>
+      {% endif %}
+    {% endif %}
+
+    <div class="card mb-4">
+      <div class="card-body">
+        <form method="post" enctype="multipart/form-data">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <div class="mb-3">
+            <label class="form-label" for="file">CSV file</label>
+            <input class="form-control" type="file" id="file" name="file" accept=".csv,text/csv" required>
+            <div class="form-text">Up to {{ max_mb }} MB and {{ max_rows }} rows.</div>
+          </div>
+
+          <fieldset class="mb-3">
+            <legend class="form-label fs-6">If a day already has a value</legend>
+            <div class="form-check">
+              <input class="form-check-input" type="radio" name="mode" id="mode-fill" value="fill" checked>
+              <label class="form-check-label" for="mode-fill"><strong>Keep mine</strong>, only fill the empty spots <span class="text-muted">(safe)</span></label>
+            </div>
+            <div class="form-check">
+              <input class="form-check-input" type="radio" name="mode" id="mode-over" value="overwrite">
+              <label class="form-check-label" for="mode-over"><strong>Replace mine</strong> with the file's value</label>
+            </div>
+            <div class="form-text">Empty cells in the file never erase anything.</div>
+          </fieldset>
+
+          <div class="form-check mb-3">
+            <input class="form-check-input" type="checkbox" name="dry_run" id="dry_run" value="1" checked>
+            <label class="form-check-label" for="dry_run">Check only, don't save yet</label>
+          </div>
+
+          <button class="btn btn-primary d-inline-flex align-items-center gap-1" type="submit">{{ icon('plus', 16) }} Check / import</button>
+          <a class="btn btn-link" href="{{ url_for('main.history') }}">Cancel</a>
+        </form>
+      </div>
+    </div>
+
+    <h2 class="h6">File format</h2>
+    <p class="small text-muted mb-2">The first row is the header. <code>date</code> is required (YYYY-MM-DD, not in the future).
+      Add only the columns you have, in any order. Leave a cell empty for "no value".</p>
+    <pre class="small border rounded p-2 bg-light mb-3">date,study_hours,sleep_hours,stress_level,journaled,weather
+2026-10-18,4,7.5,3,1,sunny
+2026-10-19,,8,5,0,rainy</pre>
+    <div class="table-responsive">
+      <table class="table table-sm small">
+        <thead><tr><th>Column</th><th>What it is</th><th>Allowed values</th></tr></thead>
+        <tbody>
+          {% for c in columns %}<tr><td><code>{{ c.field }}</code></td><td>{{ c.name }}</td><td>{{ c.rule }}</td></tr>{% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <p class="small text-muted">Imported habits you don't track stay saved but are hidden until you turn them on in setup.</p>
+  </div>
+</div>
+{% endblock %}

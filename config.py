@@ -35,3 +35,4 @@ class Config:
     SECRET_KEY = _secret_key()
     SQLALCHEMY_DATABASE_URI = os.environ.get("DATABASE_URL", "sqlite:///ppia.db")
     SQLALCHEMY_TRACK_MODIFICATIONS = False
+    MAX_CONTENT_LENGTH = 4 * 1024 * 1024        # reject bigger uploads early (photo limit is 3 MB)

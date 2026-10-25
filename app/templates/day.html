@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% from "_icons.html" import icon %}
+{% block title %}{{ d.strftime("%b %d, %Y") }} - Hibi{% endblock %}
+{% block content %}
+<div class="day-head d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('main.day', iso=prev_iso) }}" aria-label="Previous day">&larr; Previous</a>
+  <div class="text-center">
+    <h1 class="h4 m-0">{{ d.strftime("%A") }}{% if is_today %} <span class="hx-badge">today</span>{% endif %}</h1>
+    <div class="text-muted">{{ d.strftime("%B %d, %Y") }}</div>
+  </div>
+  {% if next_iso %}
+    <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('main.day', iso=next_iso) }}" aria-label="Next day">Next &rarr;</a>
+  {% else %}
+    <span class="btn btn-outline-secondary btn-sm disabled" aria-disabled="true">Next &rarr;</span>
+  {% endif %}
+</div>
+
+<div class="card day-summary mb-4">
+  <div class="card-body d-flex flex-wrap align-items-center gap-3">
+    <span class="day-level cell l{{ level }}" aria-hidden="true"></span>
+    <div class="flex-grow-1">
+      <div class="fw-semibold">{{ level_text }}</div>
+      {% if level %}
+        <div class="small text-muted">{{ met }} of {{ n_goals }} goals met</div>
+        <div class="hx-bar day-bar mt-2"><span class="{{ 'hx-hi' if pct >= 70 else 'hx-mid' if pct >= 40 else 'hx-lo' }}" style="width: {{ pct }}%"></span></div>
+      {% else %}
+        <div class="small text-muted">Pick a habit below to log it for this day.</div>
+      {% endif %}
+    </div>
+    {% if log %}
+    <div class="d-flex gap-2">
+      <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('insights.estimate_log', log_id=log.id) }}">Estimate</a>
+      <form method="post" action="{{ url_for('main.delete_log', log_id=log.id) }}" class="m-0"
+            onsubmit="return confirm('Delete everything logged on {{ iso }}? This cannot be undone.');">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button class="btn btn-outline-danger btn-sm d-inline-flex align-items-center gap-1" type="submit">{{ icon('trash', 14) }} Delete day</button>
+      </form>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<h2 class="h6 text-uppercase text-muted mb-2">Goals</h2>
+<div class="row g-3 mb-4">
+  {% for g in goals %}
+  <div class="col-sm-6 col-lg-4">
+    <div class="card day-card h-100" style="--accent: {{ g.habit.color }}">
+      <div class="card-body">
+        <div class="d-flex justify-content-between align-items-start">
+          <strong class="d-flex align-items-center gap-2"><span style="color: {{ g.habit.color }}">{{ icon(g.habit.field, 18) }}</span>{{ g.title }}</strong>
+          {% if g.state == true %}<span class="hx-chip hx-met">{{ icon('check', 12) }} met</span>
+          {% elif g.state == false %}<span class="hx-chip hx-miss">{{ icon('x', 12) }} missed</span>
+          {% else %}<span class="hx-chip hx-none">no data</span>{% endif %}
+        </div>
+        <div class="day-value">{% if g.habit.type == "check" %}{{ "Done" if g.done else "Not done" }}{% elif g.empty %}<span class="text-muted">-</span>{% else %}{{ g.full }}{% endif %}</div>
+        {% if g.habit.type == "check" %}
+          <form method="post" action="{{ url_for('main.toggle_habit', key=g.habit.key) }}" class="m-0">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="date" value="{{ iso }}">
+            <input type="hidden" name="next" value="day">
+            <button class="btn btn-outline-primary btn-sm w-100" type="submit">{{ "Mark not done" if g.done else "Mark done" }}</button>
+          </form>
+        {% else %}
+          <a class="btn btn-outline-primary btn-sm w-100" href="{{ url_for('main.log_habit', key=g.habit.key, date=iso, back='day') }}">{{ "Edit" if not g.empty else "Log" }}</a>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+{% if extras %}
+<h2 class="h6 text-uppercase text-muted mb-2">Context</h2>
+<div class="row g-3 mb-4">
+  {% for g in extras %}
+  <div class="col-sm-6 col-lg-3">
+    <div class="card day-card h-100" style="--accent: {{ g.color }}">
+      <div class="card-body">
+        <strong class="d-flex align-items-center gap-2"><span style="color: {{ g.color }}">{{ icon(g.habit.field, 18) }}</span>{{ g.title }}</strong>
+        <div class="day-value">{% if g.empty %}<span class="text-muted">-</span>{% else %}{{ g.full }}{% endif %}</div>
+        <a class="btn btn-outline-primary btn-sm w-100" href="{{ url_for('main.log_habit', key=g.habit.key, date=iso, back='day') }}">{{ "Edit" if not g.empty else "Log" }}</a>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+<h2 class="h6 text-uppercase text-muted mb-2">Note <span class="text-lowercase fw-normal">(optional)</span></h2>
+<div class="card mb-4">
+  <div class="card-body">
+    <form method="post" action="{{ url_for('main.save_day_note', iso=iso) }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label class="visually-hidden" for="note">Note for {{ iso }}</label>
+      <textarea class="form-control" id="note" name="note" rows="3" maxlength="{{ note_max }}"
+                placeholder="Anything worth remembering about this day? (exam week, slept badly...)">{{ note or "" }}</textarea>
+      <div class="d-flex justify-content-between align-items-center mt-2">
+        <span class="form-text m-0">Up to {{ note_max }} characters. Leave it empty and save to remove the note.
+          Notes never change your scores or streaks.</span>
+        <button class="btn btn-primary btn-sm" type="submit">Save note</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<a class="btn btn-link px-0" href="{{ url_for('main.index') }}">&larr; Back to home</a>
+<a class="btn btn-link" href="{{ url_for('main.history') }}">History</a>
+{% endblock %}

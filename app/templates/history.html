@@ -7,9 +7,14 @@
     <h1 class="h3 m-0">History</h1>
     <p class="text-muted small m-0 mt-1">Tap any value to change it. Tap <span class="hx-inline">{{ icon('plus', 12) }}</span> to fill in a gap.</p>
   </div>
-  <a class="btn btn-outline-secondary btn-sm d-inline-flex align-items-center gap-1" href="{{ url_for('main.export_csv') }}">
-    {{ icon('download', 16) }} Download CSV
-  </a>
+  <div class="d-flex gap-2">
+    <a class="btn btn-outline-secondary btn-sm d-inline-flex align-items-center gap-1" href="{{ url_for('main.import_csv') }}">
+      {{ icon('plus', 16) }} Import CSV
+    </a>
+    <a class="btn btn-outline-secondary btn-sm d-inline-flex align-items-center gap-1" href="{{ url_for('main.export_csv') }}">
+      {{ icon('download', 16) }} Download CSV
+    </a>
+  </div>
 </div>
 
 {% if not rows %}
@@ -45,8 +50,8 @@
         {% set day = r.log.log_date.isoformat() %}
         <tr class="{{ 'hx-today' if r.is_today }}">
           <td class="hx-date-col">
-            <span class="hx-dow">{{ r.log.log_date.strftime("%a") }}{% if r.is_today %} <span class="hx-badge">today</span>{% endif %}</span>
-            <span class="hx-day">{{ r.log.log_date.strftime("%b %d") }}{% if r.show_year %} <small class="text-muted">{{ r.log.log_date.year }}</small>{% endif %}</span>
+            <a class="hx-daylink" href="{{ url_for('main.day', iso=day) }}" title="Open this day"><span class="hx-dow">{{ r.log.log_date.strftime("%a") }}{% if r.is_today %} <span class="hx-badge">today</span>{% endif %}</span>
+            <span class="hx-day">{% if r.note %}<span class="hx-note" title="{{ r.note|truncate(160) }}">{{ icon('note', 13) }}</span> {% endif %}{{ r.log.log_date.strftime("%b %d") }}{% if r.show_year %} <small class="text-muted">{{ r.log.log_date.year }}</small>{% endif %}</span></a>
           </td>
           {% for cell in r.cells %}
           <td class="hx-cell">
@@ -61,10 +66,10 @@
                 </button>
               </form>
             {% elif cell.empty %}
-              <a class="hx-chip hx-none" href="{{ url_for('main.log_habit', key=cell.habit.key, date=day) }}" title="Add a value">{{ icon('plus', 12) }}</a>
+              <a class="hx-chip hx-none" href="{{ url_for('main.log_habit', key=cell.habit.key, date=day, back='history') }}" title="Add a value">{{ icon('plus', 12) }}</a>
             {% else %}
               <a class="hx-chip {{ 'hx-met' if cell.state == true else 'hx-miss' if cell.state == false else 'hx-info' }}"
-                 href="{{ url_for('main.log_habit', key=cell.habit.key, date=day) }}" title="{{ cell.full }}">
+                 href="{{ url_for('main.log_habit', key=cell.habit.key, date=day, back='history') }}" title="{{ cell.full }}">
                 {% if cell.state == true %}{{ icon('check', 12) }}{% elif cell.state == false %}{{ icon('x', 12) }}{% endif %}
                 {{ cell.short }}
               </a>

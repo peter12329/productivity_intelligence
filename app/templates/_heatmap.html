@@ -1,0 +1,83 @@
+{# The heatmap card. Rendered inside index.html and, on its own, by /heatmap. #}
+    <!-- HEATMAP CARD: last 12 months by default; a picker appears once there are earlier years -->
+    <div class="card heat-card mb-3">
+      <div class="card-body">
+      <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2" id="heatmap-section">
+        <div class="d-flex align-items-baseline gap-2">
+          <h2 class="h6 mb-0">{{ data.heat_title }}</h2>
+          <span class="small text-muted">{{ data.heat_count }} day{{ "s" if data.heat_count != 1 }} {{ "met" if data.focus else "logged" }}</span>
+        </div>
+        <form class="d-flex align-items-center gap-2 flex-wrap m-0" method="get" action="{{ url_for('main.index') }}#heatmap-section" data-heat-form>
+          <select class="form-select form-select-sm w-auto" name="habit" aria-label="Heatmap habit">
+            <option value="">All goals</option>
+            {% for o in data.focus_options %}
+            <option value="{{ o.key }}" {% if o.key == data.focus %}selected{% endif %}>{{ o.title }}</option>
+            {% endfor %}
+          </select>
+          {% if data.show_year_picker %}
+          <select class="form-select form-select-sm w-auto" name="year" aria-label="Heatmap period">
+            {% for o in data.heat_options %}
+            <option value="{{ o.year or '' }}" {% if o.year == data.heat_year %}selected{% endif %}>{{ o.label }}</option>
+            {% endfor %}
+          </select>
+          {% endif %}
+          <noscript><button type="submit" class="btn btn-outline-secondary btn-sm">Apply</button></noscript>
+          {% if not data.heat_year %}<button type="button" id="heatmap-toggle" class="btn btn-link btn-sm p-0">Show full 12 months</button>{% endif %}
+        </form>
+      </div>
+
+      <div class="heatmap{% if data.heat_year %} expanded{% endif %}" id="heatmap" data-scroll="{{ 'end' if data.heat_scroll_end else 'start' }}">
+        {% for week in data.weeks %}
+          <div class="heatmap-col{% if not data.heat_year and loop.revindex > 8 %} old-week{% endif %}">
+            <div class="month-label">{{ data.month_labels[loop.index0] }}</div>
+            <div class="heatmap-week">
+              {% for c in week %}
+                {% if c %}
+                  <a class="cell l{{ c.level }}{% if c.today and not c.logged %} today-empty{% endif %}{% if c.today %} is-today{% endif %}" href="{{ url_for('main.day', iso=c.date) }}" title="{{ c.tip }}" aria-label="{{ c.tip }}"></a>
+                {% else %}
+                  <div class="cell empty"></div>
+                {% endif %}
+              {% endfor %}
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+
+      <div class="legend small text-muted mt-2">
+        <span class="cell l0"></span> No data
+        <span class="cell today-empty ms-2"></span> Today, not logged
+        {% if data.focus %}
+        <span class="ms-3 cell l1"></span> Not met
+        <span class="ms-2 cell l4"></span> Goal met
+        {% else %}
+        <span class="ms-3">Less</span>
+        <span class="cell l1"></span><span class="cell l2"></span><span class="cell l3"></span><span class="cell l4"></span>
+        <span>Full day</span>
+        {% endif %}
+      </div>
+
+        <div class="heat-stats">
+          <div class="heat-stat">
+            <img class="heat-stat-icon" src="{{ url_for('static', filename='img/hibi-icon.svg') }}" alt="">
+            <div>
+              <div class="heat-stat-value">{{ data.streak_current }}<span> day{{ "s" if data.streak_current != 1 }}</span></div>
+              <div class="heat-stat-label">Current streak</div>
+            </div>
+          </div>
+          <div class="heat-stat">
+            <span class="heat-stat-badge"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M12 2l2.9 6.3 6.9.7-5.2 4.6 1.5 6.8L12 17l-6.1 3.4 1.5-6.8L2.2 9l6.9-.7z"/></svg></span>
+            <div>
+              <div class="heat-stat-value">{{ data.streak_longest }}<span> day{{ "s" if data.streak_longest != 1 }}</span></div>
+              <div class="heat-stat-label">Longest streak{% if data.heat_year %} in {{ data.heat_year }}{% endif %}</div>
+            </div>
+          </div>
+          <div class="heat-stat">
+            <span class="heat-stat-badge"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4M9 15l2 2 4-4"/></svg></span>
+            <div>
+              <div class="heat-stat-value">{{ data.heat_pct }}<span>% of days</span></div>
+              <div class="heat-stat-label">{{ "Goal met" if data.focus else "Logged" }}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>

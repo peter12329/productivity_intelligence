@@ -270,3 +270,14 @@ h1, h2, h3, h4, h5, h6 { letter-spacing: -.01em; }
 .hx-table thead th.hx-date-col, .hx-table tbody td.hx-date-col { position: sticky; left: 0; z-index: 1; background: #fff; }
 .hx-table tbody tr.hx-today td.hx-date-col { background: #fff4ee; }
 .hx-table tbody tr:hover td.hx-date-col { background: #fdf6f2; }
+
+/* ---------- heatmap cells as links + day page ---------- */
+a.cell { cursor: pointer; text-decoration: none; }
+a.cell:focus-visible { outline: 2px solid #f35d3a; outline-offset: 2px; }
+.hx-daylink { color: inherit; text-decoration: none; display: block; }
+.hx-daylink:hover .hx-day { color: #c2410c; text-decoration: underline; }
+.day-level { width: 44px; height: 44px; border-radius: 10px; flex: none; }
+.day-bar { width: 100%; max-width: 320px; height: 8px; }
+.day-card { border-left: 4px solid var(--accent, #dee2e6); }
+.day-value { font-size: 1.35rem; font-weight: 600; margin: .6rem 0 .8rem; min-height: 1.9rem; }
+.hx-note { display: inline-flex; vertical-align: -2px; color: #f35d3a; }
