@@ -17,6 +17,8 @@ class User(UserMixin, db.Model):
         db.DateTime, default=lambda: datetime.now(timezone.utc), nullable=False
     )
 
+    theme = db.Column(db.String(30), nullable=False, default="midnight-purple")
+
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)
 
@@ -43,6 +45,7 @@ class ProductivityLog(db.Model):
     # New goal habits
     disruptions = db.Column(db.Integer, nullable=True)       # meetings / interruptions
     junk_food = db.Column(db.Integer, nullable=True)         # 0 = no, 1 = yes
+    exercise_minutes = db.Column(db.Integer, nullable=True)  # minutes of exercise
 
     # Context inputs (no goal)
     task_difficulty = db.Column(db.Integer, nullable=True)   # 1-5
@@ -55,4 +58,4 @@ class ProductivityLog(db.Model):
 
 @login_manager.user_loader
 def load_user(user_id):
-    return db.session.get(User, int(user_id))
+    return db.session.get(User, int(user_id))

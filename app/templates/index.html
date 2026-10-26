@@ -16,7 +16,7 @@
     {% endif %}
 
     <div class="d-flex justify-content-between small text-muted mb-1">
-      <span>This week</span><span>{{ data.percent }}% of goals achieved</span>
+      <span>This week &middot; <a href="{{ url_for('main.scoring') }}">How scoring works</a></span><span>{{ data.percent }}% of goals achieved</span>
     </div>
     <div class="progress mb-4" style="height: 8px;">
       <div class="progress-bar" style="width: {{ data.percent }}%"></div>

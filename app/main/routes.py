@@ -28,6 +28,30 @@ from app.models import ProductivityLog
 from app.notes import NOTE_MAX, delete_note, get_note, notes_for, save_note
 from app.stats import dashboard_stats
 
+# ------------------------------------------------------------- user themes
+THEMES = {
+    "midnight-purple": {
+        "name": "Midnight Purple",
+        "description": "Deep navy backgrounds with violet accents.",
+    },
+    "sage-cream": {
+        "name": "Sage & Cream",
+        "description": "Muted greens and warm cream surfaces.",
+    },
+    "modern-blue": {
+        "name": "Modern Blue",
+        "description": "Clean surfaces with calm blue accents.",
+    },
+    "dark-neon": {
+        "name": "Dark Neon",
+        "description": "Charcoal surfaces with neon green accents.",
+    },
+    "warm-minimalist": {
+        "name": "Warm Minimalist",
+        "description": "Soft beige surfaces and terracotta accents.",
+    },
+}
+
 main_bp = Blueprint("main", __name__)
 
 # ---------------------------------------------------------------- log forms
@@ -76,6 +100,7 @@ UI_TITLES = {
     "study_hours": "Deep work", "sleep_hours": "Sleep", "stress_level": "Stress",
     "caffeine_mg": "Caffeine", "journaled": "Journaling", "junk_food": "Junk food",
     "disruptions": "Disruptions", "study_sessions": "Deep work sessions",
+    "exercise_minutes": "Exercise",
     "free_hours": "Free hours", "task_difficulty": "Task difficulty",
     "day_type": "Day type", "weather": "Weather",
 }
@@ -87,6 +112,7 @@ UI_BLURBS = {
     "journaled": "One tap when you have journaled",
     "junk_food": "Whether you had junk food",
     "disruptions": "Interruptions during focus time",
+    "exercise_minutes": "Minutes of exercise or movement",
     "study_sessions": "How many focused sessions",
     "free_hours": "Free time in your day",
     "task_difficulty": "How hard the day's work is",
@@ -343,6 +369,18 @@ def heatmap_partial():
     return render_template("_heatmap.html", data=data)
 
 
+@main_bp.route("/scoring")
+def scoring():
+    """Plain-language guide to how goals, daily scores and the weekly percent work."""
+    personal = current_user.is_authenticated
+    habits = tracking_for(current_user)[1] if personal else HABITS
+    return render_template(
+        "scoring.html", habits=habits, personal=personal, context=CONTEXT,
+        core_keys=_core_keys(),
+        per_habit=round(100 / len(habits), 1) if habits else 0,
+    )
+
+
 @main_bp.route("/setup", methods=["GET", "POST"])
 @login_required
 def setup():
@@ -377,6 +415,7 @@ PRESETS = {
     "study": [0, 1, 2, 3, 4, 5, 6],
     "sleep": [5, 6, 6.5, 7, 7.5, 8, 9],
     "disruptions": [0, 1, 2, 3, 4, 5],
+    "exercise": [0, 15, 30, 45, 60, 90],
     "free_hours": [0, 1, 2, 4, 6, 8, 10],
     "stress": list(range(1, 11)),
     "sessions": [0, 1, 2, 3, 4, 5, 6],
@@ -1004,6 +1043,22 @@ def remove_avatar():
         flash("Profile photo removed.", "info")
     return redirect(url_for("main.profile"))
 
+@main_bp.route("/profile/theme", methods=["POST"])
+@login_required
+def update_theme():
+    selected_theme = request.form.get("theme", "").strip()
+
+    if selected_theme not in THEMES:
+        flash("Please select a valid theme.", "danger")
+        return redirect(url_for("main.profile"))
+
+    current_user.theme = selected_theme
+    db.session.commit()
+
+    flash(f"Theme updated to {THEMES[selected_theme]['name']}!", "success")
+    return redirect(url_for("main.profile"))
+
+
 @main_bp.route("/profile")
 @login_required
 def profile():
@@ -1031,4 +1086,6 @@ def profile():
         tracking=[c for _, _, cards in _setup_cards(tracking_for(current_user)[0]) for c in cards if c["on"]],
         n_options=len(_all_keys()),
         estimate=latest_estimate(current_user.id),
+        themes=THEMES,
+        current_theme=current_user.theme or "midnight-purple",
     )

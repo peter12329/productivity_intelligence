@@ -56,7 +56,8 @@ def test_dashboard_score_uses_only_tracked_habits(app):
     stats = dashboard_stats(db.session.get(User, 1), core_habits())
     assert stats["summary"]["best_score"] == 100.0        # 3 of the 3 tracked goals
     assert len(stats["habits"]) == 3
-    assert dashboard_stats(db.session.get(User, 1))["summary"]["best_score"] == 37.5   # 3 of all 8
+    all_score = dashboard_stats(db.session.get(User, 1))["summary"]["best_score"]
+    assert all_score == round(3 / len(HABITS) * 100, 1)   # 3 of every goal habit
 
 
 def test_context_only_day_is_not_a_zero_percent_day(app):

@@ -26,5 +26,28 @@ def create_app(config_class=Config):
 
     with app.app_context():
         db.create_all()
+        _ensure_columns()
 
     return app
+
+
+# Columns added after the first release. create_all() never alters existing
+# tables, so older databases get them here: (table, column, SQL type and default).
+_ADDED_COLUMNS = [
+    ("users", "theme", "VARCHAR(30) NOT NULL DEFAULT 'midnight-purple'"),
+    ("productivity_logs", "exercise_minutes", "INTEGER"),
+]
+
+
+def _ensure_columns():
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(db.engine)
+    tables = set(inspector.get_table_names())
+    for table, column, ddl in _ADDED_COLUMNS:
+        if table not in tables:
+            continue
+        if column in {c["name"] for c in inspector.get_columns(table)}:
+            continue
+        with db.engine.begin() as conn:
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))

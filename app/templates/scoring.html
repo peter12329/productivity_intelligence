@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% block title %}How scoring works &middot; Hibi{% endblock %}
+
+{% block content %}
+{% from "_icons.html" import icon %}
+<div class="row justify-content-center">
+  <div class="col-lg-8">
+
+    <h1 class="h3 mb-1">How scoring works</h1>
+    <p class="text-muted">A quick guide to what &ldquo;on track&rdquo; means: how each habit is checked, how a day becomes a percentage, and where the other numbers come from.</p>
+
+    <!-- 1 -->
+    <div class="card mb-3"><div class="card-body">
+      <h2 class="h5"><span class="badge bg-primary me-2">1</span>Every habit has a goal</h2>
+      <p class="mb-2">Each habit you track has one simple rule, for example <strong>Sleep 7h+</strong> or <strong>Stress 5 or lower</strong>. When you log a value, the habit lands in one of three states:</p>
+      <ul class="mb-0">
+        <li><strong>Met</strong>: you logged it and it hit the goal. The cell is filled with the habit's colour.</li>
+        <li><strong>Not met</strong>: you logged it but it missed the goal.</li>
+        <li><strong>No data</strong>: you haven't logged it that day. The cell stays empty.</li>
+      </ul>
+    </div></div>
+
+    <!-- 2 -->
+    <div class="card mb-3"><div class="card-body">
+      <h2 class="h5"><span class="badge bg-primary me-2">2</span>A day's score is the share of goals met</h2>
+      <p class="mb-2"><strong>Daily score = habits met &divide; habits you track &times; 100</strong></p>
+      <p class="mb-2">Example: you track 5 habits and meet 3 of them. That day scores 3 &divide; 5 = <strong>60%</strong>.</p>
+      <ul class="mb-0">
+        <li>Every tracked habit is worth the same. {% if personal and habits %}You track {{ habits|length }}, so each one is worth about <strong>{{ per_habit }}%</strong> of a day.{% else %}With 5 habits, each is worth 20% of a day.{% endif %}</li>
+        <li>A tracked habit you didn't log on a day you <em>did</em> log something counts as not met, so it lowers that day's score.</li>
+        <li>A day with nothing logged for your tracked habits is skipped. It doesn't count as 0%.</li>
+      </ul>
+    </div></div>
+
+    <!-- 3 -->
+    <div class="card mb-3"><div class="card-body">
+      <h2 class="h5"><span class="badge bg-primary me-2">3</span>&ldquo;This week&rdquo; on the home page</h2>
+      <p class="mb-2"><strong>Week % = goals met &divide; (habits you track &times; days so far this week) &times; 100</strong></p>
+      <p class="mb-2">The week runs Monday to Sunday and only counts days that have started. On Wednesday you have had 3 days, so with 5 tracked habits the most you can have met is 15. Meeting 9 of them shows <strong>60%</strong>.</p>
+      <p class="mb-0 text-muted small">The percentage is out of every habit and every day so far, so a day you didn't log pulls it down.</p>
+    </div></div>
+
+    <!-- 4 -->
+    <div class="card mb-3"><div class="card-body">
+      <h2 class="h5"><span class="badge bg-primary me-2">4</span>Dashboard numbers</h2>
+      <ul class="mb-0">
+        <li><strong>Avg score</strong>: the average of your daily scores across all logged days.</li>
+        <li><strong>Best score</strong>: your highest single day.</li>
+        <li><strong>7-day trend</strong>: a rolling average of the last 7 logged days, which smooths out one-off good or bad days.</li>
+        <li><strong>Streaks</strong>: consecutive days a habit was met. One missed or unlogged day resets the current streak, and the best streak is kept.</li>
+        <li><strong>What moves your score</strong>: how strongly each habit rises and falls with your daily score (needs about two weeks of logs). Closer to 1 or &minus;1 means a stronger link. It shows a pattern, not a cause.</li>
+      </ul>
+    </div></div>
+
+    <!-- 5 -->
+    <div class="card mb-3"><div class="card-body">
+      <h2 class="h5"><span class="badge bg-primary me-2">5</span>What does and doesn't count</h2>
+      <ul class="mb-0">
+        <li><strong>Counts:</strong> goal habits. These have a target and appear in the weekly grid and heatmap.</li>
+        <li><strong>Doesn't count:</strong> context inputs such as free hours, task difficulty, day type and weather. They describe your day and never change your score. </li>
+        <li><strong>Always on:</strong> {% for h in habits if h.key in core_keys %}{{ h.name }}{% if not loop.last %}, {% endif %}{% else %}Deep work, Sleep and Stress{% endfor %} stay on because the estimate needs them. You can turn the other habits off in <a href="{{ url_for('main.setup') if personal else url_for('auth.login') }}">setup</a>.</li>
+        <li><strong>Notes</strong> never change scores or streaks.</li>
+      </ul>
+      <p class="small text-muted mt-2 mb-0">Turning a habit on or off changes the number of habits you are scored against, so the percentages shift with it.</p>
+    </div></div>
+
+    <!-- 6 -->
+    <div class="card mb-3"><div class="card-body">
+      <h2 class="h5"><span class="badge bg-warning text-dark me-2">6</span>Estimated score is a different thing</h2>
+      <p class="mb-0">The <strong>Estimated score</strong> (0&ndash;100) on the home page is an experimental model's guess for a day with the inputs you give it. It learns from simulated data, so treat it as a demo. It is separate from your goal score above and has its own typical-error range.</p>
+    </div></div>
+
+    <!-- your goals -->
+    {% if personal %}
+    <h2 class="h5 mt-4">Your goals right now</h2>
+    {% if habits %}
+    <div class="table-responsive mb-3">
+      <table class="table align-middle">
+        <thead><tr><th>Habit</th><th>What you log</th><th>Counts as met</th></tr></thead>
+        <tbody>
+          {% for h in habits %}
+          <tr>
+            <td><span class="hicon-wrap" style="color: {{ h.color }}">{{ icon(h.field, 18) }}</span> {{ h.label or h.name }}</td>
+            <td class="small text-muted">{% if h.type == "check" %}One tap when done{% elif h.unit %}{{ h.unit }}{% else %}&ndash;{% endif %}</td>
+            <td>{{ h.name }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+    {% endif %}
+
+    <div class="d-flex gap-2 mb-5">
+      <a class="btn btn-primary" href="{{ url_for('main.index') }}">Back to home</a>
+      {% if personal %}<a class="btn btn-outline-secondary" href="{{ url_for('main.setup') }}">Change what you track</a>{% endif %}
+    </div>
+
+  </div>
+</div>
+{% endblock %}

@@ -82,6 +82,12 @@ HABITS = [
         "color": "#198754", "met": lambda v: v >= 7,
     },
     {
+        "key": "exercise", "name": "Exercise 30+ min", "label": "Exercise minutes",
+        "field": "exercise_minutes", "unit": "minutes",
+        "min": 0, "max": 600, "step": 5, "cast": int,
+        "color": "#20c997", "met": lambda v: v >= 30,
+    },
+    {
         "key": "disruptions", "name": "Disruptions 2 or fewer", "label": "Disruptions",
         "field": "disruptions", "unit": "meetings or interruptions",
         "min": 0, "max": 20, "step": 1, "cast": int,
